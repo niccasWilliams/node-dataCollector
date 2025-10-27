@@ -1,0 +1,14 @@
+
+node_modules/
+
+
+
+# Build outputs
+dist/
+build/
+
+.env
+
+# Setup configuration (contains app-specific settings)
+# NOTE: .setup-config.json is now committed to allow automated template sync
+# It only contains non-sensitive data: app name, ports, service names
