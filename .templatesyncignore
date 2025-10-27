@@ -37,3 +37,4 @@ src/routes/auth/roles/permissions/individual-permissions.ts
 
 # Public Assets (falls vorhanden)
 public/*
+package.json
