@@ -178,6 +178,8 @@ export type AppSettingsType = typeof appSettingsTypeEnum.enumValues[number];
 
 
 export type AppLog = typeof appLogs.$inferSelect;
+export type AppLogId = typeof appLogs.$inferSelect['id'];
+export type AppLogLevel = typeof appLogLevelEnum.enumValues[number];
 
 
 export type Webhook = typeof webhooks.$inferSelect;

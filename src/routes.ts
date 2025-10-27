@@ -21,6 +21,9 @@ import registerIndividualRoutes from "./individual-routes";
 
 
 const registerRoutes = (app: express.Application) => {
+  app.get("/", (_req, res) => {
+    res.sendFile("index.html", { root: "public" });
+  });
 
   // Base Template Routes
   app.use("/app-info", appInfoRouter);

@@ -68,3 +68,59 @@ export interface WaitForOptions {
   timeout?: number;
   state?: 'attached' | 'detached' | 'visible' | 'hidden';
 }
+
+export interface ElementQueryOptions {
+  /**
+   * Restrict the lookup to specific tag names (e.g. ['button', 'a'])
+   */
+  tags?: string[];
+  /**
+   * Include hidden elements in the result set. Defaults to false.
+   */
+  includeHidden?: boolean;
+  /**
+   * Limit the amount of elements returned to avoid huge payloads.
+   */
+  limit?: number;
+}
+
+export interface PageElement {
+  tag: string;
+  selector: string;
+  text: string;
+  attributes: Record<string, string>;
+  classes: string[];
+  id?: string;
+  name?: string;
+  href?: string;
+  type?: string;
+  role?: string | null;
+  formAction?: string | null;
+  visible: boolean;
+  disabled: boolean;
+  boundingBox?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+}
+
+export interface LogoutOptions {
+  /**
+   * Explicit selectors to try first when attempting to logout.
+   */
+  selectors?: string[];
+  /**
+   * Custom keywords that indicate logout buttons or links.
+   */
+  keywords?: string[];
+  /**
+   * Wait for a navigation after clicking a logout element.
+   */
+  waitForNavigation?: boolean;
+  /**
+   * Timeout (in ms) for any waiting that happens during logout.
+   */
+  timeout?: number;
+}

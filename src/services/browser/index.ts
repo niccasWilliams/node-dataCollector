@@ -1,3 +1,3 @@
 export { BrowserService } from './browser.service';
-export { BrowserController, browserController } from './browser.controller';
+export { BrowserHandler, browserHandler } from './browser.handler';
 export * from '../../types/browser.types';

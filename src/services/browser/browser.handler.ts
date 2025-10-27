@@ -3,17 +3,19 @@ import type {
   BrowserSession,
   NavigationOptions,
   ScreenshotOptions,
-  PageInteraction,
   BrowserConfig,
   PageInfo,
+  ElementQueryOptions,
+  PageElement,
+  LogoutOptions,
 } from '../../types/browser.types';
 
 /**
- * BrowserController - High-level API for browser automation
+ * BrowserUseCase - High-level API for browser automation
  *
  * Manages multiple browser instances and provides a clean API
  */
-export class BrowserController {
+export class BrowserHandler {
   private instances: Map<string, BrowserService> = new Map();
   private defaultConfig: Partial<BrowserConfig>;
 
@@ -141,6 +143,25 @@ export class BrowserController {
   }
 
   /**
+   * Collect metadata about elements on the current page.
+   */
+  async getElements(
+    sessionId: string,
+    options?: ElementQueryOptions
+  ): Promise<PageElement[]> {
+    const service = this.getService(sessionId);
+    return await service.getElements(options);
+  }
+
+  /**
+   * Try to trigger a logout flow on the current page.
+   */
+  async logout(sessionId: string, options?: LogoutOptions): Promise<boolean> {
+    const service = this.getService(sessionId);
+    return await service.logout(options);
+  }
+
+  /**
    * Go back
    */
   async goBack(sessionId: string): Promise<void> {
@@ -212,6 +233,8 @@ export class BrowserController {
     const events = [
       'session:created',
       'session:closed',
+      'session:logout',
+      'session:logout:failed',
       'navigation:start',
       'navigation:complete',
       'navigation:error',
@@ -271,10 +294,65 @@ export class BrowserController {
   ): Promise<T> {
     return await this.evaluate(sessionId, extractor);
   }
+
+  /**
+   * Helper: Check if user is logged in
+   */
+  async isLoggedIn(sessionId: string): Promise<boolean> {
+    const service = this.getService(sessionId);
+
+    // 1. Check cookies for auth-like markers
+    const hasAuthCookie = await service.evaluate(() => {
+      return document.cookie.split(';').some((c) => {
+        const value = c.trim().toLowerCase();
+        return (
+          value.startsWith('auth') ||
+          value.includes('session') ||
+          value.includes('token')
+        );
+      });
+    });
+
+    // 2. Check DOM for elements that only exist when logged in
+    const hasUserUI = await service.evaluate(() => {
+      const logoutBtn = Array.from(document.querySelectorAll('button, a')).some(
+        (el) => el.textContent && el.textContent.toLowerCase().includes('logout')
+      );
+
+      const accountLink = Array.from(
+        document.querySelectorAll('a, nav, header')
+      ).some((el) => {
+        const txt = (el.textContent || '').toLowerCase();
+        return (
+          txt.includes('account') ||
+          txt.includes('profil') ||
+          txt.includes('dashboard') ||
+          txt.includes('mein konto') ||
+          txt.includes('abmelden')
+        );
+      });
+
+      return logoutBtn || accountLink;
+    });
+
+    // 3. Check URL – bist du immer noch auf der Login-Seite?
+    const pageInfo = await this.getPageInfo(sessionId);
+    const stillOnLoginPage = pageInfo.url.includes('/sign-in');
+
+    if ((hasAuthCookie || hasUserUI) && !stillOnLoginPage) {
+      return true;
+    }
+
+    if (pageInfo.url.includes('/user')) {
+      return true;
+    }
+
+    return false;
+  }
 }
 
 // Export singleton instance
-export const browserController = new BrowserController({
+export const browserHandler = new BrowserHandler({
   headless: false,
   slowMo: 100,
 });

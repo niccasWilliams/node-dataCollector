@@ -4,6 +4,11 @@ import * as schema from "./schema";
 import * as individualSchema from "./individual/individual-schema";
 import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
+import dotenv from "dotenv";
+import path from "path";
+
+// Sicherstellen, dass .env geladen ist, bevor wir die DB-Verbindung erstellen
+dotenv.config({ path: path.resolve(process.cwd(), '.env') });
 
 // Kombiniere beide Schemas
 const combinedSchema = { ...schema, ...individualSchema };
@@ -20,11 +25,6 @@ declare global {
 
 // Hinweis: In .d.ts-Dateien wird das nicht zu JS emittiert; hier im Modul ist es OK.
 // In Prod greifen wir NICHT auf globalThis zu.
-
-// Ensure DATABASE_URL is set
-if (!process.env.DATABASE_URL) {
-  throw new Error("DATABASE_URL environment variable is not set");
-}
 
 let pg: ReturnType<typeof postgres>;
 let database: PostgresJsDatabase<typeof combinedSchema>;

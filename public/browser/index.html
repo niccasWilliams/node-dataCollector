@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Browser Session Cockpit</title>
+    <link rel="stylesheet" href="/public/assets/styles.css" />
+    <link rel="stylesheet" href="/public/assets/browser.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="app-header__inner">
+        <div class="app-brand">
+          <span class="app-logo">DC</span>
+          <div class="app-brand__titles">
+            <span class="app-brand__title">Data Collector</span>
+            <span class="app-brand__subtitle">Automation Toolkit</span>
+          </div>
+        </div>
+        <nav class="app-nav">
+          <a class="nav-link" href="/">Home</a>
+          <a class="nav-link active" href="/browser">Browser</a>
+          <a class="nav-link" href="/docs" target="_blank" rel="noopener">Docs</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="layout-grid two-columns layout-max">
+      <section class="panel full-width hero-panel">
+        <h1 class="page-heading">Browser Session Cockpit</h1>
+        <p class="page-tagline">
+          Verwalte Playwright/Patchright-Sessions, führe Interaktionen aus und halte Daten & Screenshots zentral fest.
+        </p>
+        <div class="hero-actions">
+          <button class="secondary" id="refresh-button" type="button">Sessions aktualisieren</button>
+          <span class="hero-hint">Tipp: Aktiviere eine Session links, um kontextbezogene Aktionen zu sehen.</span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Neue Session starten</h2>
+        <form id="create-session-form">
+          <label>
+            Optionales Config-JSON
+            <textarea
+              id="create-session-config"
+              placeholder='{"headless": false, "slowMo": 100}'
+            ></textarea>
+          </label>
+          <button type="submit">Session erzeugen</button>
+          <div class="action-result" id="create-session-result" hidden>
+            <pre></pre>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel">
+        <h2>Aktive Sessions</h2>
+        <div id="sessions">
+          <div class="placeholder">Noch keine Session aktiv. Erstelle eine neue oder aktualisiere.</div>
+        </div>
+      </section>
+
+      <section class="panel full-width">
+        <h2 id="action-title">Aktionen</h2>
+        <div id="action-panel" class="placeholder">
+          Wähle links eine Session aus, um alle verfügbaren Aktionen zu sehen.
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="/public/assets/browser-dashboard.js"></script>
+  </body>
+</html>

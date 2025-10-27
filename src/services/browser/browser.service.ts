@@ -1,4 +1,4 @@
-import { chromium, Browser, BrowserContext, Page } from 'playwright';
+import { chromium, Browser, BrowserContext, Page } from 'patchright';
 import { EventEmitter } from 'events';
 import type {
   BrowserSession,
@@ -8,7 +8,129 @@ import type {
   PageInteraction,
   PageInfo,
   WaitForOptions,
+  ElementQueryOptions,
+  PageElement,
+  LogoutOptions,
 } from '../../types/browser.types';
+
+const ELEMENT_COLLECTOR_FN = new Function(
+  'params',
+  `
+    const { tags, includeHidden = false, limit } = params || {};
+    const tagFilter = Array.isArray(tags) && tags.length ? new Set(tags.map((tag) => String(tag).toLowerCase())) : null;
+    const maxItems = typeof limit === 'number' && limit > 0 ? limit : null;
+
+    const collected = [];
+    const allElements = Array.from(document.querySelectorAll('*'));
+
+    for (const node of allElements) {
+      if (!(node instanceof HTMLElement)) continue;
+      const htmlEl = node;
+      const tagName = htmlEl.tagName.toLowerCase();
+
+      if (tagFilter && !tagFilter.has(tagName)) {
+        continue;
+      }
+
+      const style = window.getComputedStyle(htmlEl);
+      const rect = htmlEl.getBoundingClientRect();
+      const visible =
+        rect.width > 0 &&
+        rect.height > 0 &&
+        style.visibility !== 'hidden' &&
+        style.display !== 'none' &&
+        style.opacity !== '0';
+
+      if (!includeHidden && !visible) {
+        continue;
+      }
+
+      const attributes = {};
+      for (const name of htmlEl.getAttributeNames()) {
+        const value = htmlEl.getAttribute(name);
+        if (value !== null) {
+          attributes[name] = value;
+        }
+      }
+
+      const textContent = (htmlEl.innerText || '').trim();
+
+      const selectorParts = [];
+      let current = htmlEl;
+      let depth = 0;
+      while (current && depth < 5) {
+        if (current.id) {
+          selectorParts.unshift('#' + current.id);
+          current = null;
+          break;
+        }
+
+        let selector = current.tagName.toLowerCase();
+        const classList = Array.from(current.classList || []).slice(0, 2);
+        if (classList.length) {
+          selector += '.' + classList.join('.');
+        }
+
+        let siblingIndex = 1;
+        let sibling = current.previousElementSibling;
+        while (sibling) {
+          if (sibling.tagName === current.tagName) {
+            siblingIndex++;
+          }
+          sibling = sibling.previousElementSibling;
+        }
+        if (siblingIndex > 1) {
+          selector += ':nth-of-type(' + siblingIndex + ')';
+        }
+
+        selectorParts.unshift(selector);
+        current = current.parentElement;
+        depth++;
+      }
+
+      const selectorPath = selectorParts.length ? selectorParts.join(' > ') : htmlEl.tagName.toLowerCase();
+      const nameValue =
+        typeof htmlEl.name === 'string' && htmlEl.name.length ? htmlEl.name : (attributes['name'] || undefined);
+      const hrefValue = htmlEl instanceof HTMLAnchorElement ? htmlEl.href : (attributes['href'] || undefined);
+      const typeValue = 'type' in htmlEl ? (htmlEl.type || attributes['type'] || undefined) : attributes['type'] || undefined;
+      const formActionValue =
+        htmlEl instanceof HTMLButtonElement
+          ? htmlEl.formAction || htmlEl.getAttribute('formaction') || undefined
+          : htmlEl.getAttribute('formaction') || undefined;
+      const disabledValue = 'disabled' in htmlEl ? Boolean(htmlEl.disabled) : false;
+
+      collected.push({
+        tag: tagName,
+        selector: selectorPath,
+        text: textContent.length > 200 ? textContent.slice(0, 200) + '…' : textContent,
+        attributes,
+        classes: Array.from(htmlEl.classList),
+        id: htmlEl.id || undefined,
+        name: nameValue,
+        href: hrefValue,
+        type: typeValue,
+        role: htmlEl.getAttribute('role'),
+        formAction: formActionValue,
+        visible,
+        disabled: disabledValue,
+        boundingBox: visible
+          ? {
+              x: rect.x,
+              y: rect.y,
+              width: rect.width,
+              height: rect.height,
+            }
+          : undefined,
+      });
+
+      if (maxItems && collected.length >= maxItems) {
+        break;
+      }
+    }
+
+    return collected;
+  `
+) as (params: { tags?: string[]; includeHidden?: boolean; limit?: number }) => Array<Record<string, any>>;
 
 /**
  * BrowserService - Manages Playwright browser instances with real Chrome
@@ -28,45 +150,41 @@ export class BrowserService extends EventEmitter {
   private page: Page | null = null;
   private session: BrowserSession | null = null;
   private config: BrowserConfig;
+  private static readonly DEFAULT_LOGOUT_KEYWORDS = [
+    'logout',
+    'log out',
+    'sign out',
+    'signout',
+    'log off',
+    'logoff',
+    'sign off',
+    'abmelden',
+    'ausloggen',
+    'abmeldung',
+    'abmelde',
+    'exit',
+    'quit',
+    'cerrar sesión',
+    'déconnexion',
+  ];
 
   constructor(config: Partial<BrowserConfig> = {}) {
     super();
 
-    // Default configuration for real Chrome
+    // Default configuration for real Chrome with Patchright
+    // Patchright automatically adds the best anti-detection flags
     this.config = {
-      headless: false, // Show browser by default for user visibility
+      headless: false, // Show browser for user visibility
       slowMo: 100, // Slow down by 100ms to appear more human-like
       devtools: false,
-      executablePath: this.findChromePath(),
       args: [
-        '--disable-blink-features=AutomationControlled', // Hide automation detection
+        // Only essential Linux flags - Patchright handles the rest
         '--disable-dev-shm-usage',
-        '--no-sandbox', // Required for Linux
+        '--no-sandbox',
         '--disable-setuid-sandbox',
-        '--disable-infobars',
-        '--disable-extensions-except', // Don't load extensions
-        '--disable-background-networking',
-        '--disable-background-timer-throttling',
-        '--disable-backgrounding-occluded-windows',
-        '--disable-breakpad',
-        '--disable-client-side-phishing-detection',
-        '--disable-component-extensions-with-background-pages',
-        '--disable-default-apps',
-        '--disable-features=TranslateUI,BlinkGenPropertyTrees',
-        '--disable-hang-monitor',
-        '--disable-ipc-flooding-protection',
-        '--disable-popup-blocking',
-        '--disable-prompt-on-repost',
-        '--disable-renderer-backgrounding',
-        '--disable-sync',
-        '--enable-features=NetworkService,NetworkServiceInProcess',
-        '--force-color-profile=srgb',
-        '--metrics-recording-only',
-        '--no-first-run',
-        '--password-store=basic',
-        '--use-mock-keychain',
-        '--lang=de-DE,de', // German locale
-        '--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+
+        // Locale
+        '--lang=de-DE,de',
       ],
       viewport: {
         width: 1920,
@@ -77,15 +195,7 @@ export class BrowserService extends EventEmitter {
   }
 
   /**
-   * Find Chrome executable path on Linux/Ubuntu
-   */
-  private findChromePath(): string {
-    // Use real Chrome installation - verified to exist on system
-    return '/usr/bin/google-chrome';
-  }
-
-  /**
-   * Initialize browser session
+   * Initialize browser session with Patchright (undetected Playwright)
    */
   async initialize(): Promise<BrowserSession> {
     if (this.browser) {
@@ -93,19 +203,19 @@ export class BrowserService extends EventEmitter {
     }
 
     try {
-      // Launch real Chrome
+      // Launch real Chrome with Patchright for optimal stealth
       this.browser = await chromium.launch({
         headless: this.config.headless,
-        executablePath: this.config.executablePath,
+        channel: 'chrome', // Use system Chrome instead of executablePath
         args: this.config.args,
         slowMo: this.config.slowMo,
         devtools: this.config.devtools,
       });
 
-      // Create context with realistic settings
+      // Create context with minimal fingerprinting (let Chrome use real values)
       this.context = await this.browser.newContext({
-        viewport: this.config.viewport,
-        userAgent: await this.getRealisticUserAgent(),
+        viewport: null, // Use real viewport from Chrome instead of fake dimensions
+        // Don't set custom userAgent - let Chrome use its real one
         locale: 'de-DE',
         timezoneId: 'Europe/Berlin',
         permissions: ['geolocation', 'notifications'],
@@ -116,169 +226,18 @@ export class BrowserService extends EventEmitter {
         javaScriptEnabled: true,
       });
 
-      // Add comprehensive anti-detection scripts
+      // Patchright handles most anti-detection internally via CDP patches
+      // We only add minimal, safe enhancements that don't create detectable patterns
       await this.context.addInitScript(() => {
-        // Override navigator.webdriver
-        Object.defineProperty(navigator, 'webdriver', {
-          get: () => undefined,
-          configurable: true,
-        });
-
-        // Remove webdriver property from Navigator prototype
-        delete (Navigator.prototype as any).webdriver;
-
-        // Add chrome object to make it look like a real Chrome browser
-        (window as any).chrome = {
-          app: {},
-          runtime: {
-            PlatformOs: {
-              MAC: 'mac',
-              WIN: 'win',
-              ANDROID: 'android',
-              CROS: 'cros',
-              LINUX: 'linux',
-              OPENBSD: 'openbsd',
-            },
-            PlatformArch: {
-              ARM: 'arm',
-              X86_32: 'x86-32',
-              X86_64: 'x86-64',
-            },
-            PlatformNaclArch: {
-              ARM: 'arm',
-              X86_32: 'x86-32',
-              X86_64: 'x86-64',
-            },
-          },
-          csi: () => {},
-          loadTimes: () => {},
-        };
-
-        // Add realistic plugins
-        Object.defineProperty(navigator, 'plugins', {
-          get: () => {
-            const ChromePDFPlugin = {
-              0: { type: 'application/x-google-chrome-pdf', suffixes: 'pdf', description: 'Portable Document Format' },
-              description: 'Portable Document Format',
-              filename: 'internal-pdf-viewer',
-              length: 1,
-              name: 'Chrome PDF Plugin',
-            };
-            const ChromePDFViewer = {
-              0: { type: 'application/pdf', suffixes: 'pdf', description: '' },
-              description: '',
-              filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai',
-              length: 1,
-              name: 'Chrome PDF Viewer',
-            };
-            const NativeClient = {
-              0: { type: 'application/x-nacl', suffixes: '', description: 'Native Client Executable' },
-              1: { type: 'application/x-pnacl', suffixes: '', description: 'Portable Native Client Executable' },
-              description: '',
-              filename: 'internal-nacl-plugin',
-              length: 2,
-              name: 'Native Client',
-            };
-            return [ChromePDFPlugin, ChromePDFViewer, NativeClient];
-          },
-        });
-
-        // Override permissions API
-        const originalQuery = window.navigator.permissions.query;
-        window.navigator.permissions.query = (parameters: any) => {
-          if (parameters.name === 'notifications') {
-            return Promise.resolve({ state: 'prompt' } as PermissionStatus);
-          }
-          return originalQuery.call(window.navigator.permissions, parameters);
-        };
-
-        // Make toString functions look legitimate
-        Object.defineProperty(Function.prototype.toString, 'toString', {
-          value: () => 'function toString() { [native code] }',
-          writable: false,
-          configurable: false,
-        });
-
-        // Languages - make it look realistic
-        Object.defineProperty(navigator, 'languages', {
-          get: () => ['de-DE', 'de', 'en-US', 'en'],
-        });
-
-        // Platform
-        Object.defineProperty(navigator, 'platform', {
-          get: () => 'Linux x86_64',
-        });
-
-        // Hardware concurrency (realistic CPU core count)
-        Object.defineProperty(navigator, 'hardwareConcurrency', {
-          get: () => 8,
-        });
-
-        // Device memory
-        Object.defineProperty(navigator, 'deviceMemory', {
-          get: () => 8,
-        });
-
-        // Add realistic screen properties
-        Object.defineProperty(window.screen, 'availWidth', { get: () => 1920 });
-        Object.defineProperty(window.screen, 'availHeight', { get: () => 1080 });
-        Object.defineProperty(window.screen, 'width', { get: () => 1920 });
-        Object.defineProperty(window.screen, 'height', { get: () => 1080 });
-        Object.defineProperty(window.screen, 'colorDepth', { get: () => 24 });
-        Object.defineProperty(window.screen, 'pixelDepth', { get: () => 24 });
-
-        // Canvas fingerprinting protection
-        const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
-        HTMLCanvasElement.prototype.toDataURL = function (type?: string) {
-          const context = this.getContext('2d');
-          if (context) {
-            // Add slight noise to canvas data
-            const imageData = context.getImageData(0, 0, this.width, this.height);
-            for (let i = 0; i < imageData.data.length; i += 4) {
-              imageData.data[i] += Math.floor(Math.random() * 2);
-              imageData.data[i + 1] += Math.floor(Math.random() * 2);
-              imageData.data[i + 2] += Math.floor(Math.random() * 2);
-            }
-            context.putImageData(imageData, 0, 0);
-          }
-          return originalToDataURL.apply(this, [type] as any);
-        };
-
-        // WebGL fingerprinting protection
-        const getParameter = WebGLRenderingContext.prototype.getParameter;
-        WebGLRenderingContext.prototype.getParameter = function (parameter: number) {
-          if (parameter === 37445) {
-            return 'Intel Inc.';
-          }
-          if (parameter === 37446) {
-            return 'Intel Iris OpenGL Engine';
-          }
-          return getParameter.call(this, parameter);
-        };
-
-        // Add realistic battery API
-        Object.defineProperty(navigator, 'getBattery', {
-          value: () =>
-            Promise.resolve({
-              charging: true,
-              chargingTime: 0,
-              dischargingTime: Infinity,
-              level: 1,
-            }),
-        });
-
-        // Override connection API
-        Object.defineProperty(navigator, 'connection', {
-          get: () => ({
-            effectiveType: '4g',
-            rtt: 50,
-            downlink: 10,
-            saveData: false,
-          }),
-        });
-
-        // Console debug message
-        console.log('%c🚀 Stealth Browser Initialized', 'color: green; font-weight: bold; font-size: 14px;');
+        // Add chrome object (real Chrome has this)
+        if (!(window as any).chrome) {
+          (window as any).chrome = {
+            runtime: {},
+            loadTimes: function() {},
+            csi: function() {},
+            app: {}
+          };
+        }
       });
 
       // Create page
@@ -477,17 +436,21 @@ export class BrowserService extends EventEmitter {
     const title = await this.page!.title();
     const cookies = await this.context!.cookies();
 
-    // Get localStorage
-    const localStorage = await this.page!.evaluate(() => {
-      const items: Record<string, string> = {};
-      for (let i = 0; i < window.localStorage.length; i++) {
-        const key = window.localStorage.key(i);
-        if (key) {
-          items[key] = window.localStorage.getItem(key) || '';
+    let localStorage: Record<string, string> | undefined;
+    try {
+      localStorage = await this.page!.evaluate(() => {
+        const items: Record<string, string> = {};
+        for (let i = 0; i < window.localStorage.length; i++) {
+          const key = window.localStorage.key(i);
+          if (key) {
+            items[key] = window.localStorage.getItem(key) || '';
+          }
         }
-      }
-      return items;
-    });
+        return items;
+      });
+    } catch (error) {
+      this.emit('page:localstorage:error', error);
+    }
 
     return {
       url,
@@ -506,6 +469,26 @@ export class BrowserService extends EventEmitter {
   }
 
   /**
+   * Collect elements on the current page with metadata for inspection.
+   */
+  async getElements(options: ElementQueryOptions = {}): Promise<PageElement[]> {
+    this.ensureInitialized();
+
+    const { tags, includeHidden = false, limit } = options;
+
+    const elements = await this.page!.evaluate(
+      ELEMENT_COLLECTOR_FN,
+      {
+        tags,
+        includeHidden,
+        limit,
+      }
+    );
+
+    return elements as PageElement[];
+  }
+
+  /**
    * Set cookies
    */
   async setCookies(cookies: Array<any>): Promise<void> {
@@ -519,6 +502,145 @@ export class BrowserService extends EventEmitter {
   async clearCookies(): Promise<void> {
     this.ensureInitialized();
     await this.context!.clearCookies();
+  }
+
+  /**
+   * Attempt to logout from the current application by clicking common logout controls.
+   */
+  async logout(options: LogoutOptions = {}): Promise<boolean> {
+    this.ensureInitialized();
+
+    const page = this.page!;
+    const explicitSelectors = options.selectors ?? [];
+    const keywords =
+      options.keywords && options.keywords.length
+        ? options.keywords
+        : BrowserService.DEFAULT_LOGOUT_KEYWORDS;
+    const waitForNavigation = options.waitForNavigation ?? true;
+    const timeout = options.timeout ?? 5000;
+
+    const attemptedSelectors: string[] = [];
+
+    // Try user-provided selectors first
+    for (const selector of explicitSelectors) {
+      try {
+        await this.clickSelectorWithOptionalWait(selector, waitForNavigation, timeout);
+        attemptedSelectors.push(selector);
+        this.emit('session:logout', { selector, strategy: 'explicit' });
+        this.updateSession({ status: 'idle' });
+        return true;
+      } catch (error) {
+        attemptedSelectors.push(selector);
+        this.emit('interaction:error', { interaction: { type: 'click', selector }, error });
+      }
+    }
+
+    // Heuristic search for logout candidates
+    const autoSelectors = await page.evaluate(
+      ({ keywords }) => {
+        const normalized = keywords.map((k: string) => k.toLowerCase());
+        const getCssPath = (element: Element | null): string => {
+          if (!element) return '';
+          const path: string[] = [];
+          let current: Element | null = element;
+          let depth = 0;
+
+          while (current && depth < 5) {
+            if ((current as HTMLElement).id) {
+              path.unshift(`#${(current as HTMLElement).id}`);
+              break;
+            }
+
+            const tagName = current.tagName.toLowerCase();
+            let selector = tagName;
+
+            const classList = Array.from((current as HTMLElement).classList || []).slice(0, 2);
+            if (classList.length) {
+              selector += `.${classList.join('.')}`;
+            }
+
+            let siblingIndex = 1;
+            let sibling = current.previousElementSibling;
+            while (sibling) {
+              if (sibling.tagName === current.tagName) {
+                siblingIndex++;
+              }
+              sibling = sibling.previousElementSibling;
+            }
+            if (siblingIndex > 1) {
+              selector += `:nth-of-type(${siblingIndex})`;
+            }
+
+            path.unshift(selector);
+            current = current.parentElement;
+            depth++;
+          }
+
+          return path.join(' > ') || element.tagName.toLowerCase();
+        };
+
+        const seen = new Set<string>();
+        const matches: string[] = [];
+        const candidates = new Set<Element>();
+        const selectors = [
+          'button',
+          'a',
+          '[role="button"]',
+          'input[type="button"]',
+          'input[type="submit"]',
+          '[data-action]',
+          '[data-testid]',
+          '[href]',
+        ];
+
+        selectors.forEach((selector) => {
+          document.querySelectorAll(selector).forEach((el) => candidates.add(el));
+        });
+
+        candidates.forEach((el) => {
+          if (!(el instanceof HTMLElement)) return;
+
+          const text = (el.innerText || '').toLowerCase();
+          const attrValues = el.getAttributeNames().map((name) => (el.getAttribute(name) || '').toLowerCase());
+          const datasetValues = Object.values(el.dataset || {}).map((value) => (value || '').toLowerCase());
+          const href = (el.getAttribute('href') || '').toLowerCase();
+          const valueAttribute = (el.getAttribute('value') || '').toLowerCase();
+          const aggregated = [text, href, valueAttribute, ...attrValues, ...datasetValues].filter(Boolean);
+
+          const hit = normalized.find((keyword) => aggregated.some((value) => value.includes(keyword)));
+          if (hit) {
+            const selector = getCssPath(el);
+            if (selector && !seen.has(selector)) {
+              seen.add(selector);
+              matches.push(selector);
+            }
+          }
+        });
+
+        return matches.slice(0, 10);
+      },
+      { keywords }
+    );
+
+    for (const selector of autoSelectors) {
+      try {
+        await this.clickSelectorWithOptionalWait(selector, waitForNavigation, timeout);
+        attemptedSelectors.push(selector);
+        this.emit('session:logout', { selector, strategy: 'auto' });
+        this.updateSession({ status: 'idle' });
+        return true;
+      } catch (error) {
+        attemptedSelectors.push(selector);
+        this.emit('interaction:error', { interaction: { type: 'click', selector }, error });
+      }
+    }
+
+    this.emit('session:logout:failed', {
+      keywords,
+      attemptedSelectors,
+    });
+
+    return false;
   }
 
   /**
@@ -613,8 +735,25 @@ export class BrowserService extends EventEmitter {
     return `browser-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   }
 
-  private async getRealisticUserAgent(): Promise<string> {
-    // Real Chrome user agent for Ubuntu
-    return 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+  private async clickSelectorWithOptionalWait(
+    selector: string,
+    waitForNavigation: boolean,
+    timeout: number
+  ): Promise<void> {
+    await this.page!.waitForSelector(selector, {
+      timeout,
+      state: 'visible',
+    });
+
+    if (waitForNavigation) {
+      await Promise.all([
+        this.page!
+          .waitForLoadState('networkidle', { timeout })
+          .catch(() => this.page!.waitForTimeout(500)),
+        this.page!.click(selector, { timeout }),
+      ]);
+    } else {
+      await this.page!.click(selector, { timeout });
+    }
   }
 }
