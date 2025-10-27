@@ -1,5 +1,5 @@
 {
-  "name": "data-collector",
+  "name": "node-template",
   "version": "1.0.0",
   "description": "",
   "main": "app.ts",
@@ -64,6 +64,7 @@
     "@react-pdf/renderer": "^4.3.0",
     "amqplib": "^0.10.5",
     "axios": "^1.7.9",
+    "chalk": "^5.6.2",
     "cors": "^2.8.5",
     "cron-parser": "^4.9.0",
     "date-fns": "^4.1.0",
@@ -80,7 +81,6 @@
     "node-cache": "^5.1.2",
     "node-cron": "^3.0.3",
     "node-schedule": "^2.1.1",
-    "playwright": "^1.56.1",
     "postgres": "^3.4.5",
     "qrcode": "^1.5.4",
     "react": "^19.1.0",

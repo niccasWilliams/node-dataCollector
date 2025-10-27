@@ -1,9 +1,11 @@
 import { Request, Response } from "express";
 import { responseHandler } from "@/lib/communication";
-import { AppSettingsKey, settingsService } from "./settings.service";
+import { settingsService } from "./settings.service";
 import { getUserIdFromRequest } from "@/util/utils";
 import { permissionUseCase } from "@/routes/auth/roles/permissions/permission.useCase";
 import { AppPermissions } from "@/routes/auth/roles/permissions/permission.service";
+import { AppSettingsKey } from "./individual-settings";
+
 
 
 class SettingsController {

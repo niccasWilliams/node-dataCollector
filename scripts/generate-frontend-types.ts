@@ -376,6 +376,14 @@ function generateTypes(): string {
   // Extract base schema types
   const baseTypes = extractSchemaTypes(baseSchemaPath);
 
+  // Read individual schema
+  const individualSchemaPath = 'src/db/individual/individual-schema.ts';
+  let individualEnumTypes = '';
+  if (fs.existsSync(path.join(process.cwd(), individualSchemaPath))) {
+    const individualSchemaContent = fs.readFileSync(path.join(process.cwd(), individualSchemaPath), 'utf-8');
+    individualEnumTypes = extractEnumTypes(individualSchemaContent);
+  }
+
   // Extract individual schema types
   const individualTypes = extractSchemaTypes('src/db/individual/individual-schema.ts');
 
@@ -439,7 +447,7 @@ function generateTypes(): string {
 // ENUMS & LITERAL TYPES
 // ============================================================================
 
-${enumTypes}
+${enumTypes}${individualEnumTypes}
 // ============================================================================
 // DATABASE TYPES - Base Schema
 // ============================================================================
