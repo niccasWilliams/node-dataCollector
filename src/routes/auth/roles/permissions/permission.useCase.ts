@@ -3,7 +3,7 @@ import { database } from "@/db";
 import { Permission} from "@/db/schema";
 
 import { roleAssignmentService } from "../role-assignments/role-assignment.service";
-import { AppPermissions, permissionService } from "./permission.service";
+import { AppPermissions, AppPermissionValue, permissionService } from "./permission.service";
 import { roleService } from "../roles/role.service";
 import { userService } from "@/routes/auth/users/user/user.service";
 
@@ -90,7 +90,7 @@ class PermissionUseCase {
     }
 
 
-    async hasUserPermission(userId: number, permissionName: AppPermissions, trx = database): Promise<boolean> {
+    async hasUserPermission(userId: number, permissionName: AppPermissionValue, trx = database): Promise<boolean> {
         try {
             const userPermissions = await this.getUserPermissions(userId, trx);
             return userPermissions.some(p => p.name === permissionName);
@@ -100,7 +100,7 @@ class PermissionUseCase {
         }
     }
 
-    async hasExternalUserPermission(externalUserId: number, permissionName: AppPermissions, trx = database): Promise<boolean> {
+    async hasExternalUserPermission(externalUserId: number, permissionName: AppPermissionValue, trx = database): Promise<boolean> {
         try {
             const user = await userService.getUserByExternalUserId(externalUserId, trx);
             if (!user || !user.id) throw new Error(`User with external ID ${externalUserId} does not exist`);
@@ -111,14 +111,14 @@ class PermissionUseCase {
         }
     }
 
-    async assertUserPermission(userId: number, permissionName: AppPermissions, trx = database): Promise<void> {
+    async assertUserPermission(userId: number, permissionName: AppPermissionValue, trx = database): Promise<void> {
         const hasPermission = await this.hasUserPermission(userId, permissionName, trx);
         if (!hasPermission) {
             throw new Error(`User does not have permission: ${permissionName}`);
         }
     }
 
-    async assertExternalUserPermission(externalUserId: number, permissionName: AppPermissions, trx = database): Promise<void> {
+    async assertExternalUserPermission(externalUserId: number, permissionName: AppPermissionValue, trx = database): Promise<void> {
         const hasPermission = await this.hasExternalUserPermission(externalUserId, permissionName, trx);
         if (!hasPermission) {
             throw new Error(`User with external ID ${externalUserId} does not have permission: ${permissionName}`);

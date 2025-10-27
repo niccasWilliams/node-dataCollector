@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import { responseHandler } from "@/lib/communication";
 import jwt from "jsonwebtoken";
-import { AppPermissions, permissionService } from "./auth/roles/permissions/permission.service";
+import { AppPermissions, AppPermissionValue, permissionService } from "./auth/roles/permissions/permission.service";
 import { permissionUseCase } from "./auth/roles/permissions/permission.useCase";
 import { getExternalUserIdFromRequest } from "@/util/utils";
 import { userActivityService } from "./auth/users/activitys/user-activity.service";
@@ -220,7 +220,7 @@ export class AccessControl {
 
 
 
-    static hasPermission(requiredPermission: AppPermissions) {
+    static hasPermission(requiredPermission: AppPermissionValue) {
         return async (req: Request, res: Response, next: NextFunction) => {
             try {
                 const userId = getExternalUserIdFromRequest(req);

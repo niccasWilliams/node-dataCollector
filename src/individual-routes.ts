@@ -4,11 +4,16 @@
 
 import express from "express";
 
+import browserRouter from "./routes/browser/browser.route";
+
 /**
  * Register individual app-specific routes
  * This function is called from routes.ts after base routes are registered
  */
 const registerIndividualRoutes = (app: express.Application) => {
+
+  // Browser automation routes
+  app.use("/browser", browserRouter);
 
   // Example: Add your individual routes here
   // import articleRouter from "./routes/articles/article.route";
