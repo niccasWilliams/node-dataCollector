@@ -415,35 +415,113 @@ const ACTIONS = [
   },
 ];
 
-const sessionsContainer = document.querySelector("#sessions");
+const sessionListContainer = document.querySelector("#session-list");
+const sessionViewButtons = document.querySelectorAll(".session-tabs [data-view]");
+const badgeActive = document.querySelector("#badge-active");
+const badgeHistory = document.querySelector("#badge-history");
+const statActive = document.querySelector("#stat-active");
+const statHistory = document.querySelector("#stat-history");
+const statLastActivity = document.querySelector("#stat-last-activity");
+const previewContent = document.querySelector("#preview-content");
+const captureSnapshotButton = document.querySelector("#capture-snapshot-button");
+const openCreateSessionButton = document.querySelector("#open-create-session-modal");
+const sessionModal = document.querySelector("#create-session-modal");
+const sessionModalForm = document.querySelector("#create-session-form");
+const closeModalButtons = document.querySelectorAll("[data-action='close-session-modal']");
+const headlessInput = document.querySelector("#session-headless");
+const slowMoInput = document.querySelector("#session-slowmo");
+const slowMoValueLabel = document.querySelector("#session-slowmo-value");
+const viewportWidthInput = document.querySelector("#session-viewport-width");
+const viewportHeightInput = document.querySelector("#session-viewport-height");
+const createSessionFeedback = document.querySelector("#create-session-feedback");
+const createSessionFeedbackPre = createSessionFeedback?.querySelector("pre");
 const actionPanel = document.querySelector("#action-panel");
 const actionTitle = document.querySelector("#action-title");
 const refreshButton = document.querySelector("#refresh-button");
-const createSessionForm = document.querySelector("#create-session-form");
-const createSessionResult = document.querySelector("#create-session-result");
-const createSessionResultPre = createSessionResult?.querySelector("pre");
-const configTextarea = document.querySelector("#create-session-config");
 
-let sessionCache = [];
+let activeSessions = [];
+let historySessions = [];
+let sessionView = "active";
 let selectedSessionId = null;
+let selectedSessionSource = "active";
+let lastPreviewRequestId = 0;
 
 refreshButton?.addEventListener("click", () => loadSessions(true));
+openCreateSessionButton?.addEventListener("click", () => openSessionModal());
+closeModalButtons.forEach((button) =>
+  button.addEventListener("click", () => closeSessionModal())
+);
+sessionModalForm?.addEventListener("submit", handleCreateSessionSubmit);
+slowMoInput?.addEventListener("input", () => updateSlowMoLabel());
+sessionViewButtons.forEach((button) =>
+  button.addEventListener("click", () => {
+    const view = button.getAttribute("data-view");
+    if (view) {
+      setSessionView(view);
+    }
+  })
+);
+captureSnapshotButton?.addEventListener("click", () => {
+  const selection = getSelectedSession();
+  if (selection && selection.source === "active") {
+    captureSnapshotForSession(selection.session.id);
+  }
+});
 
-createSessionForm?.addEventListener("submit", async (event) => {
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    closeSessionModal();
+  }
+});
+
+function openSessionModal() {
+  if (!sessionModal) return;
+  sessionModal.hidden = false;
+  sessionModalForm?.reset();
+  headlessInput.checked = false;
+  slowMoInput.value = "100";
+  updateSlowMoLabel();
+  createSessionFeedback?.setAttribute("hidden", "true");
+  createSessionFeedbackPre.textContent = "";
+  slowMoInput?.focus();
+}
+
+function closeSessionModal() {
+  if (!sessionModal) return;
+  sessionModal.hidden = true;
+}
+
+function updateSlowMoLabel() {
+  if (!slowMoInput || !slowMoValueLabel) return;
+  slowMoValueLabel.textContent = `${slowMoInput.value} ms`;
+}
+
+async function handleCreateSessionSubmit(event) {
   event.preventDefault();
-  const payload = {};
-  const configValue = configTextarea.value.trim();
+  if (!sessionModalForm) return;
 
-  if (configValue) {
-    try {
-      payload.config = JSON.parse(configValue);
-    } catch (error) {
-      showCreateSessionResult({ error: "Config JSON ungültig: " + error.message });
-      return;
+  const config = {};
+
+  if (headlessInput) {
+    config.headless = headlessInput.checked;
+  }
+
+  if (slowMoInput) {
+    const slowMo = Number(slowMoInput.value);
+    if (!Number.isNaN(slowMo) && slowMo > 0) {
+      config.slowMo = slowMo;
     }
   }
 
-  showCreateSessionResult("wird erstellt...");
+  const width = Number(viewportWidthInput?.value);
+  const height = Number(viewportHeightInput?.value);
+  if (!Number.isNaN(width) && width > 0 && !Number.isNaN(height) && height > 0) {
+    config.viewport = { width, height };
+  }
+
+  const payload = Object.keys(config).length ? { config } : {};
+
+  showCreateSessionFeedback("Session wird erstellt...", false);
 
   try {
     const response = await fetch("/browser/session", {
@@ -452,35 +530,51 @@ createSessionForm?.addEventListener("submit", async (event) => {
       body: JSON.stringify(payload),
     });
     const data = await response.json();
-    showCreateSessionResult(data);
+    showCreateSessionFeedback(data, !response.ok);
 
     if (response.ok) {
+      closeSessionModal();
       await loadSessions(false);
-      configTextarea.value = "";
     }
   } catch (error) {
-    showCreateSessionResult({ error: error.message });
+    showCreateSessionFeedback({ error: error.message }, true);
   }
-});
-
-function showCreateSessionResult(message) {
-  if (!createSessionResult || !createSessionResultPre) return;
-  createSessionResult.hidden = false;
-  createSessionResultPre.textContent =
-    typeof message === "string" ? message : JSON.stringify(message, null, 2);
 }
 
-function renderSessions(sessions) {
-  sessionCache = sessions;
-  sessionsContainer.innerHTML = "";
+function showCreateSessionFeedback(message, isError = false) {
+  if (!createSessionFeedback || !createSessionFeedbackPre) return;
+  createSessionFeedback.hidden = false;
+  createSessionFeedbackPre.textContent =
+    typeof message === "string" ? message : JSON.stringify(message, null, 2);
+  createSessionFeedback.dataset.state = isError ? "error" : "success";
+}
+
+function getSessionsForView(view) {
+  return view === "history" ? historySessions : activeSessions;
+}
+
+function renderSessionList() {
+  if (!sessionListContainer) {
+    return;
+  }
+
+  const sessions = getSessionsForView(sessionView);
+  sessionListContainer.innerHTML = "";
 
   if (!sessions.length) {
     const placeholder = document.createElement("div");
     placeholder.className = "placeholder";
-    placeholder.textContent = "Keine aktiven Sessions.";
-    sessionsContainer.appendChild(placeholder);
-    selectedSessionId = null;
-    renderActionPanel();
+    placeholder.textContent =
+      sessionView === "history"
+        ? "Noch keine gespeicherten Sessions."
+        : "Noch keine aktiven Sessions. Starte eine neue oder aktualisiere.";
+    sessionListContainer.appendChild(placeholder);
+    if (sessionView === selectedSessionSource) {
+      selectedSessionId = null;
+      renderActionPanel();
+      renderPreviewForSelection();
+    }
+    updateSnapshotButtonState();
     return;
   }
 
@@ -489,59 +583,546 @@ function renderSessions(sessions) {
     card.className = "session-card";
     card.dataset.sessionId = session.id;
 
-    if (session.id === selectedSessionId) {
+    const isSelected =
+      session.id === selectedSessionId && sessionView === selectedSessionSource;
+    if (isSelected) {
       card.classList.add("active");
     }
 
+    const header = document.createElement("div");
+    header.className = "session-card__header";
+
     const title = document.createElement("h3");
+    title.className = "session-card__id";
     title.textContent = session.id;
+    header.appendChild(title);
+
+    const statusChip = document.createElement("span");
+    statusChip.className = "status-chip";
+    statusChip.dataset.status = session.status;
+    statusChip.textContent = session.status ?? "unbekannt";
+    header.appendChild(statusChip);
+    card.appendChild(header);
 
     const meta = document.createElement("div");
-    meta.className = "meta";
+    meta.className = "session-card__meta";
 
-    const status = document.createElement("span");
-    status.textContent = `Status: ${session.status}`;
+    meta.appendChild(createMetaRow("URL", session.currentUrl || "–"));
+    meta.appendChild(
+      createMetaRow(
+        "Titel",
+        session.title || "–"
+      )
+    );
+    meta.appendChild(
+      createMetaRow(
+        "Zuletzt aktiv",
+        formatTimestamp(session.lastActivityAt)
+      )
+    );
 
-    const url = document.createElement("span");
-    url.textContent = `URL: ${session.currentUrl || "–"}`;
+    card.appendChild(meta);
 
-    const lastActivity = document.createElement("span");
-    const lastActivityDate = session.lastActivityAt ? new Date(session.lastActivityAt) : null;
-    lastActivity.textContent = `Zuletzt aktiv: ${
-      lastActivityDate ? lastActivityDate.toLocaleString() : "–"
-    }`;
+    const footer = document.createElement("div");
+    footer.className = "session-card__footer";
 
-    meta.append(status, url, lastActivity);
-    card.append(title, meta);
+    const timing = document.createElement("span");
+    timing.className = "session-card__time";
+    timing.textContent = `Gestartet ${formatRelativeTime(session.createdAt)}`;
+    footer.appendChild(timing);
+
+    if (sessionView === "active") {
+      const actions = document.createElement("div");
+      actions.className = "session-card__actions";
+
+      const deleteButton = document.createElement("button");
+      deleteButton.type = "button";
+      deleteButton.className = "danger small";
+      deleteButton.textContent = "Beenden";
+      deleteButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        terminateSession(session.id);
+      });
+
+      actions.appendChild(deleteButton);
+      footer.appendChild(actions);
+    } else {
+      const actions = document.createElement("div");
+      actions.className = "session-card__actions";
+
+      const deleteHistoryButton = document.createElement("button");
+      deleteHistoryButton.type = "button";
+      deleteHistoryButton.className = "ghost small";
+      deleteHistoryButton.textContent = "Aus Historie entfernen";
+      deleteHistoryButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        deleteSessionFromHistory(session.id);
+      });
+
+      actions.appendChild(deleteHistoryButton);
+      footer.appendChild(actions);
+    }
+
+    card.appendChild(footer);
 
     card.addEventListener("click", () => {
-      selectedSessionId = session.id;
-      document
-        .querySelectorAll(".session-card")
-        .forEach((el) => el.classList.toggle("active", el === card));
-      renderActionPanel();
+      selectSession(session.id, sessionView);
     });
 
-    sessionsContainer.appendChild(card);
+    sessionListContainer.appendChild(card);
   });
 
-  if (!selectedSessionId) {
-    selectedSessionId = sessions[0].id;
-    sessionsContainer.firstElementChild?.classList.add("active");
+  if (
+    !selectedSessionId ||
+    !getSessionsForView(selectedSessionSource).some(
+      (session) => session.id === selectedSessionId
+    )
+  ) {
+    const firstSession = sessions[0];
+    if (firstSession) {
+      selectSession(firstSession.id, sessionView, { silent: true });
+    }
+  } else {
+    updateSessionCardSelection();
     renderActionPanel();
+    renderPreviewForSelection();
+  }
+
+  updateSnapshotButtonState();
+}
+
+function updateSessionCardSelection() {
+  const cards = sessionListContainer?.querySelectorAll(".session-card");
+  if (!cards) return;
+  cards.forEach((card) => {
+    const id = card.dataset.sessionId;
+    const view = sessionView;
+    const isActive =
+      id === selectedSessionId && view === selectedSessionSource;
+    card.classList.toggle("active", Boolean(isActive));
+  });
+}
+
+function selectSession(sessionId, source, options = {}) {
+  selectedSessionId = sessionId;
+  selectedSessionSource = source;
+  updateSessionCardSelection();
+  if (!options.silent) {
+    renderActionPanel();
+    renderPreviewForSelection();
+  }
+  updateSnapshotButtonState();
+}
+
+function getSelectedSession() {
+  if (!selectedSessionId) return null;
+  const list = getSessionsForView(selectedSessionSource);
+  const session = list.find((item) => item.id === selectedSessionId);
+  if (!session) return null;
+  return { session, source: selectedSessionSource };
+}
+
+function createMetaRow(label, value) {
+  const row = document.createElement("span");
+  const strong = document.createElement("strong");
+  strong.textContent = `${label}:`;
+  row.appendChild(strong);
+
+  if (typeof value === "string" && value.startsWith("http")) {
+    const link = document.createElement("a");
+    link.href = value;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.textContent = value;
+    link.classList.add("muted");
+    row.appendChild(link);
+  } else {
+    const text = document.createElement("span");
+    text.className = "muted";
+    text.textContent = value;
+    row.appendChild(text);
+  }
+
+  return row;
+}
+
+function formatTimestamp(value) {
+  if (!value) return "–";
+  const date = new Date(value);
+  return `${date.toLocaleDateString()} ${date.toLocaleTimeString()}`;
+}
+
+function formatRelativeTime(value) {
+  if (!value) return "–";
+  const date = new Date(value);
+  const delta = Date.now() - date.getTime();
+  const minutes = Math.round(delta / 60000);
+  if (minutes < 1) return "gerade eben";
+  if (minutes === 1) return "vor 1 Minute";
+  if (minutes < 60) return `vor ${minutes} Minuten`;
+  const hours = Math.round(minutes / 60);
+  if (hours === 1) return "vor 1 Stunde";
+  if (hours < 24) return `vor ${hours} Stunden`;
+  const days = Math.round(hours / 24);
+  if (days === 1) return "vor 1 Tag";
+  return `vor ${days} Tagen`;
+}
+
+function setSessionView(view) {
+  if (view !== "active" && view !== "history") {
+    return;
+  }
+
+  if (sessionView === view) {
+    return;
+  }
+
+  sessionView = view;
+  sessionViewButtons.forEach((button) => {
+    const isActive = button.getAttribute("data-view") === view;
+    button.classList.toggle("active", isActive);
+    button.setAttribute("aria-selected", isActive ? "true" : "false");
+  });
+
+  const sessions = getSessionsForView(view);
+  if (!sessions.some((session) => session.id === selectedSessionId && selectedSessionSource === view)) {
+    if (sessions.length) {
+      selectedSessionId = sessions[0].id;
+      selectedSessionSource = view;
+    } else {
+      selectedSessionId = null;
+      selectedSessionSource = view;
+    }
+  } else {
+    selectedSessionSource = view;
+  }
+
+  renderSessionList();
+  renderActionPanel();
+  renderPreviewForSelection();
+  updateSnapshotButtonState();
+}
+
+function renderPreviewForSelection() {
+  if (!previewContent) return;
+
+  updateSnapshotButtonState();
+
+  const selection = getSelectedSession();
+  if (!selection) {
+    renderPreviewPlaceholder("Wähle eine Session aus, um die Seiten-Skizze zu sehen.");
+    return;
+  }
+
+  const session = selection.session;
+  if (!session.currentUrl) {
+    renderPreviewPlaceholder("Für diese Session liegt noch keine URL vor.");
+    return;
+  }
+
+  const requestId = ++lastPreviewRequestId;
+  renderPreviewLoading("Lade gespeicherte Elemente...");
+
+  fetch(`/websites/resolve?url=${encodeURIComponent(session.currentUrl)}&limit=60`)
+    .then(async (response) => {
+      if (requestId !== lastPreviewRequestId) return null;
+      if (response.status === 404) {
+        return { status: 404 };
+      }
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data?.error || "Konnte Website nicht laden");
+      }
+      return { status: response.status, data: data.data };
+    })
+    .then((result) => {
+      if (!result || requestId !== lastPreviewRequestId) return;
+      if (result.status === 404) {
+        renderPreviewPlaceholder(
+          "Noch kein Snapshot gespeichert. Erstelle einen neuen Snapshot, um Elemente zu sehen.",
+          selection.source === "active"
+        );
+        return;
+      }
+      renderWebsitePreview(result.data, session);
+    })
+    .catch((error) => {
+      if (requestId !== lastPreviewRequestId) return;
+      renderPreviewPlaceholder(`Fehler beim Laden der Seiten-Skizze: ${error.message}`);
+    });
+}
+
+function renderPreviewPlaceholder(message, showSnapshotAction = false) {
+  if (!previewContent) return;
+  previewContent.className = "preview-placeholder";
+  previewContent.textContent = "";
+  const paragraph = document.createElement("p");
+  paragraph.textContent = message;
+  previewContent.appendChild(paragraph);
+
+  if (captureSnapshotButton) {
+    captureSnapshotButton.hidden = !showSnapshotAction;
+    captureSnapshotButton.disabled = !showSnapshotAction;
+  }
+}
+
+function renderPreviewLoading(message) {
+  if (!previewContent) return;
+  previewContent.className = "preview-placeholder";
+  previewContent.textContent = "";
+  const paragraph = document.createElement("p");
+  paragraph.textContent = message;
+  previewContent.appendChild(paragraph);
+}
+
+function renderWebsitePreview(payload, session) {
+  if (!previewContent) return;
+  previewContent.className = "preview-content";
+  previewContent.innerHTML = "";
+
+  const website = payload?.website;
+  const elements = payload?.elements || [];
+
+  const header = document.createElement("div");
+  header.className = "preview-header";
+
+  const title = document.createElement("h3");
+  title.textContent =
+    website?.title ||
+    session?.title ||
+    session?.currentUrl ||
+    "Unbenannte Seite";
+  header.appendChild(title);
+
+  const url = document.createElement("div");
+  url.className = "preview-url";
+  url.textContent = website?.url || session?.currentUrl || "–";
+  header.appendChild(url);
+
+  const meta = document.createElement("div");
+  meta.className = "preview-meta";
+  if (website?.domain) {
+    meta.appendChild(createMetaBadge("Domain", website.domain));
+  }
+  meta.appendChild(createMetaBadge("Interaktive Elemente", String(website?.elementCount ?? elements.length)));
+  meta.appendChild(createMetaBadge("Zuletzt gescannt", formatTimestamp(website?.lastScannedAt)));
+  header.appendChild(meta);
+
+  previewContent.appendChild(header);
+
+  if (elements.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "preview-placeholder";
+    const paragraph = document.createElement("p");
+    paragraph.textContent = "Keine interaktiven Elemente gespeichert.";
+    empty.appendChild(paragraph);
+    previewContent.appendChild(empty);
+    return;
+  }
+
+  const galleryTitle = document.createElement("h4");
+  galleryTitle.textContent = "Interaktive Elemente";
+  previewContent.appendChild(galleryTitle);
+
+  const gallery = document.createElement("div");
+  gallery.className = "element-gallery";
+  elements.slice(0, 24).forEach((element) => {
+    gallery.appendChild(createElementChip(element));
+  });
+
+  previewContent.appendChild(gallery);
+  updateSnapshotButtonState();
+}
+
+function createMetaBadge(label, value) {
+  const badge = document.createElement("span");
+  badge.textContent = `${label}: ${value}`;
+  return badge;
+}
+
+function createElementChip(element) {
+  const chip = document.createElement("article");
+  chip.className = "element-chip";
+
+  const header = document.createElement("div");
+  header.className = "element-chip__header";
+
+  const tag = document.createElement("span");
+  tag.className = "element-chip__tag";
+  tag.textContent = element.tagName?.toUpperCase?.() || element.tag?.toUpperCase?.() || "ELEMENT";
+  header.appendChild(tag);
+
+  const text = document.createElement("p");
+  text.className = "element-chip__text";
+  text.textContent = element.textContent?.trim() || element.text?.trim() || "(kein Text)";
+  header.appendChild(text);
+
+  chip.appendChild(header);
+
+  const meta = document.createElement("div");
+  meta.className = "element-chip__meta";
+  [
+    ["Selector", element.cssSelector || element.selector || "–"],
+    ["Rolle", element.role || "–"],
+    ["Aktion", element.href || element.formAction || "–"],
+  ].forEach(([label, value]) => {
+    const row = document.createElement("span");
+    row.textContent = `${label}: ${value}`;
+    meta.appendChild(row);
+  });
+  chip.appendChild(meta);
+
+  const actions = document.createElement("div");
+  actions.className = "element-chip__actions";
+
+  const copySelector = document.createElement("button");
+  copySelector.type = "button";
+  copySelector.className = "secondary small";
+  copySelector.textContent = "Selector kopieren";
+  copySelector.addEventListener("click", (event) => {
+    event.stopPropagation();
+    copyToClipboard(element.cssSelector || element.selector || "");
+    copySelector.textContent = "Kopiert";
+    copySelector.disabled = true;
+    setTimeout(() => {
+      copySelector.textContent = "Selector kopieren";
+      copySelector.disabled = false;
+    }, 1500);
+  });
+  actions.appendChild(copySelector);
+
+  if (element.href) {
+    const openLink = document.createElement("button");
+    openLink.type = "button";
+    openLink.className = "secondary small";
+    openLink.textContent = "Link öffnen";
+    openLink.addEventListener("click", (event) => {
+      event.stopPropagation();
+      window.open(element.href, "_blank", "noopener");
+    });
+    actions.appendChild(openLink);
+  }
+
+  chip.appendChild(actions);
+  return chip;
+}
+
+function copyToClipboard(text) {
+  if (!text) return;
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).catch(() => {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textarea);
+    });
+  }
+}
+
+function updateSnapshotButtonState() {
+  if (!captureSnapshotButton) return;
+  const selection = getSelectedSession();
+  const canCapture =
+    selection && selection.source === "active" && Boolean(selection.session?.currentUrl);
+  captureSnapshotButton.hidden = !canCapture;
+  captureSnapshotButton.disabled = !canCapture;
+}
+
+async function captureSnapshotForSession(sessionId) {
+  if (!sessionId) return;
+  renderPreviewLoading("Snapshot wird erstellt...");
+  const requestId = ++lastPreviewRequestId;
+  if (captureSnapshotButton) {
+    captureSnapshotButton.disabled = true;
+  }
+
+  try {
+    const response = await fetch(`/websites/sessions/${sessionId}/snapshot`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ limit: 60 }),
+    });
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data?.error || "Snapshot fehlgeschlagen");
+    }
+
+    if (requestId === lastPreviewRequestId) {
+      const selection = getSelectedSession();
+      const session =
+        selection && selection.session.id === sessionId
+          ? selection.session
+          : { id: sessionId, currentUrl: data.data?.website?.url };
+      renderWebsitePreview(data.data, session);
+      await loadSessions(true);
+      updateSnapshotButtonState();
+    }
+  } catch (error) {
+    if (requestId === lastPreviewRequestId) {
+      renderPreviewPlaceholder(`Snapshot fehlgeschlagen: ${error.message}`, true);
+    }
+  } finally {
+    updateSnapshotButtonState();
+  }
+}
+
+async function terminateSession(sessionId) {
+  if (!sessionId) return;
+  try {
+    const response = await fetch(`/browser/session/${sessionId}`, {
+      method: "DELETE",
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data?.error || "Session konnte nicht beendet werden");
+    }
+    await loadSessions(false);
+  } catch (error) {
+    renderPreviewPlaceholder(`Fehler beim Beenden der Session: ${error.message}`);
+  }
+}
+
+function updateSessionCounters() {
+  badgeActive && (badgeActive.textContent = String(activeSessions.length));
+  badgeHistory && (badgeHistory.textContent = String(historySessions.length));
+  statActive && (statActive.textContent = String(activeSessions.length));
+  statHistory && (statHistory.textContent = String(historySessions.length));
+
+  const combined = [...activeSessions, ...historySessions];
+  const latest = combined
+    .map((session) => session.lastActivityAt || session.updatedAt || session.createdAt)
+    .filter(Boolean)
+    .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0];
+
+  if (statLastActivity) {
+    statLastActivity.textContent = latest ? formatRelativeTime(latest) : "–";
   }
 }
 
 function renderActionPanel() {
-  if (!selectedSessionId) {
+  const selection = getSelectedSession();
+
+  if (!selection) {
     actionTitle.textContent = "Aktionen";
     actionPanel.classList.add("placeholder");
-    actionPanel.textContent = "Wähle links eine Session aus, um Aktionen auszuführen.";
+    actionPanel.textContent =
+      "Wähle links eine Session aus, um Aktionen auszuführen.";
     return;
   }
 
-  const session = sessionCache.find((s) => s.id === selectedSessionId);
-  actionTitle.textContent = `Aktionen für ${selectedSessionId}`;
+  if (selection.source !== "active") {
+    actionTitle.textContent = `Aktionen`;
+    actionPanel.classList.add("placeholder");
+    actionPanel.textContent =
+      "Aktionen stehen nur für aktive Sessions zur Verfügung.";
+    return;
+  }
+
+  const session = selection.session;
+  actionTitle.textContent = `Aktionen für ${session.id}`;
   actionPanel.classList.remove("placeholder");
   actionPanel.innerHTML = "";
 
@@ -588,7 +1169,7 @@ function renderActionPanel() {
 
   const actionsForTab = actionsByCategory[activeTabId] || [];
   actionsForTab.forEach((action) => {
-    const block = createActionBlock(action, selectedSessionId);
+    const block = createActionBlock(action, session.id);
     actionGrid.appendChild(block);
   });
 
@@ -599,6 +1180,14 @@ function renderActionPanel() {
 function createSessionOverview(session) {
   const container = document.createElement("div");
   container.className = "action-block session-overview";
+
+  if (!session) {
+    const info = document.createElement("p");
+    info.className = "muted";
+    info.textContent = "Keine Session-Daten verfügbar.";
+    container.appendChild(info);
+    return container;
+  }
 
   const title = document.createElement("h3");
   title.className = "session-overview__title";
@@ -928,30 +1517,70 @@ function groupActionsByCategory() {
 }
 
 async function loadSessions(preserveSelection = true) {
+  const previousSelection = preserveSelection ? getSelectedSession() : null;
+
   try {
-    const response = await fetch("/browser/sessions");
-    const data = await response.json();
+    const [activeResponse, historyResponse] = await Promise.all([
+      fetch("/browser/sessions"),
+      fetch("/browser/sessions/history?limit=60"),
+    ]);
 
-    if (!response.ok) {
-      throw new Error(data?.error || "Konnte Sessions nicht laden");
+    const activeData = await activeResponse.json();
+    const historyData = await historyResponse.json();
+
+    if (!activeResponse.ok) {
+      throw new Error(activeData?.error || "Konnte aktive Sessions nicht laden");
+    }
+    if (!historyResponse.ok) {
+      throw new Error(historyData?.error || "Konnte Session-Historie nicht laden");
     }
 
-    if (!preserveSelection) {
-      selectedSessionId = null;
-    } else if (
-      selectedSessionId &&
-      !data.data.some((session) => session.id === selectedSessionId)
-    ) {
-      selectedSessionId = null;
-    }
+    activeSessions = activeData.data || [];
+    historySessions = historyData.data || [];
+    updateSessionCounters();
 
-    renderSessions(data.data || []);
+    if (previousSelection) {
+      const { session, source } = previousSelection;
+      const stillExists = getSessionsForView(source).some((s) => s.id === session.id);
+      if (stillExists) {
+        selectedSessionId = session.id;
+        selectedSessionSource = source;
+      } else {
+        selectedSessionId = null;
+        selectedSessionSource = sessionView;
+      }
+    } else {
+    selectedSessionId = null;
+    selectedSessionSource = sessionView;
+  }
+
+    sessionViewButtons.forEach((button) => {
+      const isActive = button.getAttribute("data-view") === sessionView;
+      button.classList.toggle("active", isActive);
+      button.setAttribute("aria-selected", isActive ? "true" : "false");
+    });
+
+    renderSessionList();
+    renderActionPanel();
+    renderPreviewForSelection();
+    updateSnapshotButtonState();
   } catch (error) {
-    sessionsContainer.innerHTML = "";
-    const placeholder = document.createElement("div");
-    placeholder.className = "placeholder";
-    placeholder.textContent = "Fehler beim Laden der Sessions: " + error.message;
-    sessionsContainer.appendChild(placeholder);
+    activeSessions = [];
+    historySessions = [];
+    updateSessionCounters();
+
+    if (sessionListContainer) {
+      sessionListContainer.innerHTML = "";
+      const placeholder = document.createElement("div");
+      placeholder.className = "placeholder";
+      placeholder.textContent = "Fehler beim Laden der Sessions: " + error.message;
+      sessionListContainer.appendChild(placeholder);
+    }
+
+    selectedSessionId = null;
+    renderActionPanel();
+    renderPreviewPlaceholder("Keine Daten verfügbar.");
+    updateSnapshotButtonState();
   }
 }
 

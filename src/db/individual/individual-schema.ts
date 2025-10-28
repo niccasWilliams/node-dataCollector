@@ -3,20 +3,21 @@
 // This file is NOT synced with the template
 
 import {
-    boolean,
-    index,
-    integer,
-    pgEnum,
-    pgTable,
-    serial,
-    text,
-    timestamp,
-    unique,
-    numeric,
-    jsonb,
-    varchar,
-    pgSequence,
+  boolean,
+  index,
+  integer,
+  pgEnum,
+  pgTable,
+  serial,
+  text,
+  timestamp,
+  unique,
+  numeric,
+  jsonb,
+  varchar,
+  pgSequence,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { users } from "../schema";
 
 export const browserSessionStatusEnum = pgEnum("browser_session_status", ["idle", "active", "navigating", "closed"]);
@@ -124,4 +125,51 @@ export type BrowserExtractedDataId = typeof browserExtractedData.$inferSelect["i
 
 
 
+// WEBSITE INVENTORY ############################################################################################################
+
+export const websites = pgTable("websites", {
+  id: serial("id").primaryKey(),
+  url: text("url").notNull().unique(),
+  domain: text("domain").notNull(),
+  path: text("path").notNull(),
+  title: text("title"),
+  contentHash: text("content_hash"),
+  lastScannedAt: timestamp("last_scanned_at"),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => ({
+  urlIdx: index("website_url_idx").on(table.url),
+  domainIdx: index("website_domain_idx").on(table.domain),
+  domainPathIdx: index("website_domain_path_idx").on(table.domain, table.path),
+}));
+
+export const websiteElements = pgTable("website_elements", {
+  id: serial("id").primaryKey(),
+  websiteId: integer("website_id").notNull().references(() => websites.id, { onDelete: "cascade" }),
+  tagName: varchar("tag_name", { length: 100 }).notNull(),
+  cssSelector: text("css_selector").notNull(),
+  attributes: jsonb("attributes").notNull().default({}),
+  classes: jsonb("classes").notNull().default([]),
+  textContent: text("text_content"),
+  nameAttr: text("name"),
+  href: text("href"),
+  typeAttr: text("type"),
+  role: text("role"),
+  formAction: text("form_action"),
+  visible: boolean("visible").notNull().default(false),
+  disabled: boolean("disabled").notNull().default(false),
+  boundingBox: jsonb("bounding_box"),
+  orderIndex: integer("order_index").notNull().default(0),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => ({
+  websiteIdx: index("website_element_website_idx").on(table.websiteId),
+  selectorIdx: index("website_element_selector_idx").on(table.cssSelector),
+  tagIdx: index("website_element_tag_idx").on(table.tagName),
+}));
+
+export type Website = typeof websites.$inferSelect;
+export type WebsiteInsert = typeof websites.$inferInsert;
+export type WebsiteElement = typeof websiteElements.$inferSelect;
+export type WebsiteElementInsert = typeof websiteElements.$inferInsert;
 

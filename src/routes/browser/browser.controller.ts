@@ -2,6 +2,8 @@ import { Request, Response } from "express";
 import { responseHandler } from "@/lib/communication";
 import { getExternalUserIdFromRequest } from "@/util/utils";
 import { browserHandler } from "@/services/browser";
+import { removeSessionHistoryEntry, fetchSessionHistory } from "@/services/browser/browser.repository";
+import type { ElementQueryOptions } from "@/types/browser.types";
 import path from 'path';
 import fs from 'fs/promises';
 
@@ -72,6 +74,52 @@ try {
     res.json({
       success: true,
       message: 'Session closed',
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+}
+
+    async getSessionHistory(req: Request, res: Response) {
+  try {
+    const { limit } = req.query;
+    let parsedLimit: number | undefined;
+    if (typeof limit === 'string' && limit.trim().length) {
+      const value = Number(limit);
+      if (!Number.isNaN(value) && value > 0) {
+        parsedLimit = value;
+      }
+    }
+
+    const history = await fetchSessionHistory(parsedLimit);
+    res.json({
+      success: true,
+      data: history,
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+}
+
+    async deleteSessionHistoryEntry(req: Request, res: Response) {
+  try {
+    const { sessionId } = req.params;
+    if (typeof sessionId !== 'string' || !sessionId.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Ungültige Session-ID',
+      });
+    }
+
+    await removeSessionHistoryEntry(sessionId);
+    res.json({
+      success: true,
     });
   } catch (error: any) {
     res.status(500).json({
@@ -353,7 +401,7 @@ async getPageElements(req: Request, res: Response) {
     const { sessionId } = req.params;
     const { tags, includeHidden, limit } = req.query;
 
-    const options: Record<string, any> = {};
+    const options: ElementQueryOptions = {};
 
     if (typeof tags === 'string' && tags.trim().length) {
       options.tags = tags.split(',').map((tag) => tag.trim()).filter(Boolean);
@@ -372,10 +420,10 @@ async getPageElements(req: Request, res: Response) {
       }
     }
 
-    const elements = await browserHandler.getElements(sessionId, options);
+    const result = await browserHandler.getElements(sessionId, options);
     res.json({
       success: true,
-      data: elements,
+      data: result,
     });
   } catch (error: any) {
     res.status(500).json({

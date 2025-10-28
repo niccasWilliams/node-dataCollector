@@ -1,4 +1,5 @@
 import { BrowserService } from './browser.service';
+import { upsertBrowserSession, recordBrowserActivity } from './browser.repository';
 import type {
   BrowserSession,
   NavigationOptions,
@@ -9,6 +10,8 @@ import type {
   PageElement,
   LogoutOptions,
 } from '../../types/browser.types';
+import type { BrowserActivityType } from '@/db/individual/individual-schema';
+import { storeWebsiteSnapshot, type WebsiteSnapshot, INTERACTIVE_TAGS } from '../../routes/websites/website.repository';
 
 /**
  * BrowserUseCase - High-level API for browser automation
@@ -18,6 +21,7 @@ import type {
 export class BrowserHandler {
   private instances: Map<string, BrowserService> = new Map();
   private defaultConfig: Partial<BrowserConfig>;
+  private sessionConfigs: Map<string, Partial<BrowserConfig>> = new Map();
 
   constructor(defaultConfig: Partial<BrowserConfig> = {}) {
     this.defaultConfig = defaultConfig;
@@ -28,6 +32,7 @@ export class BrowserHandler {
    */
   async createSession(config?: Partial<BrowserConfig>): Promise<BrowserSession> {
     const mergedConfig = { ...this.defaultConfig, ...config };
+    const sanitizedConfig = JSON.parse(JSON.stringify(mergedConfig ?? {})) as Partial<BrowserConfig>;
     const service = new BrowserService(mergedConfig);
 
     // Setup event forwarding
@@ -35,6 +40,9 @@ export class BrowserHandler {
 
     const session = await service.initialize();
     this.instances.set(session.id, service);
+    this.sessionConfigs.set(session.id, sanitizedConfig);
+
+    await this.persistSessionData(session, { config: sanitizedConfig });
 
     return session;
   }
@@ -56,6 +64,16 @@ export class BrowserHandler {
   async navigate(sessionId: string, url: string, options?: Partial<NavigationOptions>): Promise<void> {
     const service = this.getService(sessionId);
     await service.navigate({ url, ...options });
+    try {
+      const pageInfo = await service.getPageInfo();
+      await storeWebsiteSnapshot({
+        url: pageInfo.url,
+        title: pageInfo.title,
+        elements: [],
+      });
+    } catch (error) {
+      console.warn('[BrowserHandler] Failed to persist website metadata after navigation', error);
+    }
   }
 
   /**
@@ -148,9 +166,54 @@ export class BrowserHandler {
   async getElements(
     sessionId: string,
     options?: ElementQueryOptions
-  ): Promise<PageElement[]> {
+  ): Promise<{ website: WebsiteSnapshot | null; elements: PageElement[] }> {
     const service = this.getService(sessionId);
-    return await service.getElements(options);
+    const evaluateOptions: ElementQueryOptions = {
+      ...(options || {}),
+    };
+    if (evaluateOptions.limit === undefined) {
+      evaluateOptions.limit = 500;
+    }
+    const requestingAllTags = evaluateOptions.tags?.includes('*');
+    if (requestingAllTags) {
+      evaluateOptions.tags = undefined;
+    } else if (!evaluateOptions.tags || evaluateOptions.tags.length === 0) {
+      evaluateOptions.tags = [...INTERACTIVE_TAGS];
+    }
+
+    const elements = await service.getElements(evaluateOptions);
+
+    let website: WebsiteSnapshot | null = null;
+    try {
+      const pageInfo = await service.getPageInfo();
+      let html: string | undefined;
+      try {
+        html = await service.getHTML();
+      } catch (htmlError) {
+        console.warn('[BrowserHandler] Failed to fetch page HTML for snapshot', htmlError);
+      }
+
+      website = await storeWebsiteSnapshot({
+        url: pageInfo.url,
+        title: pageInfo.title,
+        html,
+        elements,
+      });
+    } catch (error) {
+      console.warn('[BrowserHandler] Failed to persist website snapshot', error);
+    }
+
+    await this.persistCurrentSession(service);
+    await this.logActivity(sessionId, 'extraction', 'collect-elements', {
+      metadata: {
+        options: evaluateOptions,
+        returnedCount: elements.length,
+        storedInteractiveCount: website?.elementCount ?? 0,
+        websiteId: website?.id ?? null,
+      },
+    });
+
+    return { website, elements };
   }
 
   /**
@@ -214,6 +277,7 @@ export class BrowserHandler {
     const service = this.getService(sessionId);
     await service.close();
     this.instances.delete(sessionId);
+    this.sessionConfigs.delete(sessionId);
   }
 
   /**
@@ -224,6 +288,216 @@ export class BrowserHandler {
       this.closeSession(sessionId)
     );
     await Promise.all(promises);
+  }
+
+  private async persistSessionData(
+    session: BrowserSession | null | undefined,
+    options: { config?: Partial<BrowserConfig>; metadata?: Record<string, unknown> } = {}
+  ): Promise<void> {
+    if (!session) return;
+
+    const sessionConfig = options.config ?? this.sessionConfigs.get(session.id);
+
+    try {
+      await upsertBrowserSession({
+        session,
+        config: sessionConfig,
+        metadata: options.metadata ?? null,
+      });
+    } catch (error) {
+      console.warn('[BrowserHandler] Failed to persist browser session', error);
+    }
+  }
+
+  private async persistCurrentSession(service: BrowserService): Promise<void> {
+    const session = service.getSession();
+    await this.persistSessionData(session);
+  }
+
+  private async logActivity(
+    sessionId: string | null | undefined,
+    type: BrowserActivityType,
+    action: string,
+    details: {
+      target?: string;
+      value?: string;
+      metadata?: Record<string, unknown>;
+      success?: boolean;
+      error?: string;
+      duration?: number;
+      timestamp?: Date;
+    } = {}
+  ): Promise<void> {
+    if (!sessionId) return;
+
+    try {
+      await recordBrowserActivity({
+        sessionId,
+        type,
+        action,
+        target: details.target ?? null,
+        value: details.value ?? null,
+        metadata: details.metadata ?? null,
+        success: details.success ?? true,
+        error: details.error ?? null,
+        duration: details.duration ?? null,
+        timestamp: details.timestamp,
+      });
+    } catch (error) {
+      console.warn('[BrowserHandler] Failed to record browser activity', error);
+    }
+  }
+
+  private async handleServiceEvent(
+    service: BrowserService,
+    event: string,
+    payload: any
+  ): Promise<void> {
+    switch (event) {
+      case 'session:closed': {
+        const session = payload as BrowserSession;
+        await this.persistSessionData(session);
+        this.sessionConfigs.delete(session.id);
+        break;
+      }
+      case 'navigation:start': {
+        await this.persistCurrentSession(service);
+        const session = service.getSession();
+        await this.logActivity(session?.id, 'navigation', 'start', {
+          target: payload?.url,
+          metadata: payload ? { options: payload } : undefined,
+        });
+        break;
+      }
+      case 'navigation:complete': {
+        await this.persistCurrentSession(service);
+        const session = service.getSession();
+        await this.logActivity(session?.id, 'navigation', 'complete', {
+          target: payload?.url ?? session?.currentUrl ?? undefined,
+          metadata: payload ? { title: payload.title ?? null } : undefined,
+        });
+        break;
+      }
+      case 'navigation:error': {
+        await this.persistCurrentSession(service);
+        const session = service.getSession();
+        const errorMessage =
+          payload instanceof Error ? payload.message : String(payload);
+        await this.logActivity(session?.id, 'navigation', 'error', {
+          success: false,
+          error: errorMessage,
+        });
+        break;
+      }
+      case 'interaction:complete': {
+        await this.persistCurrentSession(service);
+        const session = service.getSession();
+        await this.logActivity(session?.id, 'interaction', payload?.type ?? 'unknown', {
+          target: payload?.selector,
+          value: payload?.value,
+          metadata: payload ? { options: payload.options ?? null } : undefined,
+        });
+        break;
+      }
+      case 'interaction:error': {
+        await this.persistCurrentSession(service);
+        const session = service.getSession();
+        const interaction = payload?.interaction;
+        const error = payload?.error;
+        const errorMessage =
+          error instanceof Error ? error.message : typeof error === 'string' ? error : String(error);
+        await this.logActivity(session?.id, 'interaction', interaction?.type ?? 'unknown', {
+          target: interaction?.selector,
+          value: interaction?.value,
+          success: false,
+          error: errorMessage,
+          metadata: interaction ? { options: interaction.options ?? null } : undefined,
+        });
+        break;
+      }
+      case 'screenshot:taken': {
+        await this.persistCurrentSession(service);
+        const session = service.getSession();
+        await this.logActivity(session?.id, 'screenshot', 'capture', {
+          metadata: payload ? { size: payload.size, options: payload.options } : undefined,
+        });
+        break;
+      }
+      case 'screenshot:error': {
+        await this.persistCurrentSession(service);
+        const session = service.getSession();
+        const errorMessage =
+          payload instanceof Error ? payload.message : String(payload);
+        await this.logActivity(session?.id, 'screenshot', 'error', {
+          success: false,
+          error: errorMessage,
+        });
+        break;
+      }
+      case 'page:loaded':
+      case 'page:domready': {
+        await this.persistCurrentSession(service);
+        break;
+      }
+      case 'page:console': {
+        await this.persistCurrentSession(service);
+        const session = service.getSession();
+        await this.logActivity(session?.id, 'script', 'console', {
+          metadata: payload,
+        });
+        break;
+      }
+      case 'page:error': {
+        await this.persistCurrentSession(service);
+        const session = service.getSession();
+        const errorMessage =
+          payload instanceof Error ? payload.message : String(payload);
+        await this.logActivity(session?.id, 'script', 'page:error', {
+          success: false,
+          error: errorMessage,
+        });
+        break;
+      }
+      case 'page:requestfailed': {
+        await this.persistCurrentSession(service);
+        const session = service.getSession();
+        await this.logActivity(session?.id, 'script', 'requestfailed', {
+          target: payload?.url,
+          metadata: payload,
+          success: false,
+          error: payload?.failure?.errorText ?? null,
+        });
+        break;
+      }
+      case 'session:logout': {
+        const session = service.getSession();
+        await this.persistSessionData(session);
+        await this.logActivity(session?.id, 'interaction', 'logout', {
+          metadata: payload,
+        });
+        break;
+      }
+      case 'session:logout:failed': {
+        const session = service.getSession();
+        await this.logActivity(session?.id, 'interaction', 'logout:failed', {
+          success: false,
+          metadata: payload,
+        });
+        break;
+      }
+      case 'error': {
+        const session = service.getSession();
+        const errorMessage =
+          payload instanceof Error ? payload.message : String(payload);
+        await this.logActivity(session?.id, 'script', 'service:error', {
+          success: false,
+          error: errorMessage,
+        });
+        break;
+      }
+      default:
+        break;
+    }
   }
 
   /**
@@ -254,6 +528,7 @@ export class BrowserHandler {
       service.on(event, (data) => {
         // Log for debugging
         console.log(`[BrowserController] ${event}`, data);
+        void this.handleServiceEvent(service, event, data);
       });
     });
   }

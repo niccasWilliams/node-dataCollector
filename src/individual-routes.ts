@@ -5,6 +5,7 @@
 import express from "express";
 
 import browserRouter from "./routes/browser/browser.route";
+import { websiteRoutes } from "./routes/websites/website.route";
 
 /**
  * Register individual app-specific routes
@@ -14,6 +15,7 @@ const registerIndividualRoutes = (app: express.Application) => {
 
   // Browser automation routes
   app.use("/browser", browserRouter);
+  app.use("/websites", websiteRoutes)
 
   // Example: Add your individual routes here
   // import articleRouter from "./routes/articles/article.route";

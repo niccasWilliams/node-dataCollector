@@ -25,39 +25,69 @@
       </div>
     </header>
 
-    <main class="layout-grid two-columns layout-max">
+    <main class="layout-grid dashboard-grid layout-max">
       <section class="panel full-width hero-panel">
-        <h1 class="page-heading">Browser Session Cockpit</h1>
-        <p class="page-tagline">
-          Verwalte Playwright/Patchright-Sessions, führe Interaktionen aus und halte Daten & Screenshots zentral fest.
-        </p>
+        <div>
+          <h1 class="page-heading">Browser Session Cockpit</h1>
+          <p class="page-tagline">
+            Verwalte Playwright/Patchright-Sessions, führe Interaktionen aus und halte Daten & Screenshots zentral fest.
+          </p>
+        </div>
         <div class="hero-actions">
-          <button class="secondary" id="refresh-button" type="button">Sessions aktualisieren</button>
+          <button class="primary" id="open-create-session-modal" type="button">
+            <span aria-hidden="true">＋</span>
+            Neue Session starten
+          </button>
+          <button class="secondary" id="refresh-button" type="button">
+            <span aria-hidden="true">⟳</span>
+            Sessions aktualisieren
+          </button>
           <span class="hero-hint">Tipp: Aktiviere eine Session links, um kontextbezogene Aktionen zu sehen.</span>
+        </div>
+        <div class="hero-stats" id="session-stats">
+          <div class="stat-card">
+            <span class="stat-label">Aktiv</span>
+            <span class="stat-value" id="stat-active">0</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Historie</span>
+            <span class="stat-value" id="stat-history">0</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Letzte Aktivität</span>
+            <span class="stat-value" id="stat-last-activity">–</span>
+          </div>
         </div>
       </section>
 
-      <section class="panel">
-        <h2>Neue Session starten</h2>
-        <form id="create-session-form">
-          <label>
-            Optionales Config-JSON
-            <textarea
-              id="create-session-config"
-              placeholder='{"headless": false, "slowMo": 100}'
-            ></textarea>
-          </label>
-          <button type="submit">Session erzeugen</button>
-          <div class="action-result" id="create-session-result" hidden>
-            <pre></pre>
+      <section class="panel session-panel">
+        <div class="panel-heading">
+          <h2>Sessions</h2>
+          <div class="session-tabs" role="tablist">
+            <button class="tab-button active" type="button" data-view="active" aria-selected="true">
+              Aktiv
+              <span class="tab-badge" id="badge-active">0</span>
+            </button>
+            <button class="tab-button" type="button" data-view="history" aria-selected="false">
+              Historie
+              <span class="tab-badge" id="badge-history">0</span>
+            </button>
           </div>
-        </form>
+        </div>
+        <div id="session-list" class="session-list">
+          <div class="placeholder">Noch keine Session aktiv. Starte eine neue oder aktualisiere.</div>
+        </div>
       </section>
 
-      <section class="panel">
-        <h2>Aktive Sessions</h2>
-        <div id="sessions">
-          <div class="placeholder">Noch keine Session aktiv. Erstelle eine neue oder aktualisiere.</div>
+      <section class="panel preview-panel">
+        <div class="panel-heading">
+          <h2>Seiten-Skizze</h2>
+          <button class="secondary small" id="capture-snapshot-button" type="button" hidden>
+            Snapshot aktualisieren
+          </button>
+        </div>
+        <div id="preview-content" class="preview-placeholder">
+          <p>Wähle eine Session aus, um die zuletzt erfasste Seite und ihre Elemente zu sehen.</p>
         </div>
       </section>
 
@@ -68,6 +98,55 @@
         </div>
       </section>
     </main>
+
+    <div class="modal" id="create-session-modal" hidden>
+      <div class="modal__backdrop" data-action="close-session-modal"></div>
+      <div class="modal__dialog" role="dialog" aria-modal="true" aria-labelledby="create-session-title">
+        <form id="create-session-form">
+          <header>
+            <h2 id="create-session-title">Neue Session starten</h2>
+            <p>Wähle Headless-Modus und Verzögerung, um menschliche Interaktion zu simulieren.</p>
+          </header>
+
+          <div class="modal-body">
+            <label class="field-row switch-row">
+              <span>Headless-Modus</span>
+              <span class="switch">
+                <input type="checkbox" id="session-headless" />
+                <span class="switch-track" aria-hidden="true"></span>
+                <span class="switch-thumb" aria-hidden="true"></span>
+              </span>
+            </label>
+
+            <label class="field-row">
+              <span>Verzögerung (SlowMo) in Millisekunden</span>
+              <div class="range-row">
+                <input type="range" id="session-slowmo" min="0" max="500" step="50" value="100" />
+                <span id="session-slowmo-value">100&nbsp;ms</span>
+              </div>
+            </label>
+
+            <label class="field-row">
+              <span>Viewport (optional)</span>
+              <div class="viewport-row">
+                <input type="number" id="session-viewport-width" min="320" max="2560" step="10" placeholder="Breite" />
+                <span>×</span>
+                <input type="number" id="session-viewport-height" min="320" max="1600" step="10" placeholder="Höhe" />
+              </div>
+            </label>
+          </div>
+
+          <div class="modal-footer">
+            <button class="ghost" type="button" data-action="close-session-modal">Abbrechen</button>
+            <button class="primary" type="submit">Session starten</button>
+          </div>
+
+          <div class="modal-feedback" id="create-session-feedback" hidden>
+            <pre></pre>
+          </div>
+        </form>
+      </div>
+    </div>
 
     <script type="module" src="/public/assets/browser-dashboard.js"></script>
   </body>

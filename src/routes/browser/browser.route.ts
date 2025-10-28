@@ -73,6 +73,49 @@ router.get('/session/:sessionId', browserController.getSessionById);
 
 /**
  * @openapi
+ * /browser/sessions/history:
+ *   get:
+ *     summary: Session-Historie abrufen
+ *     description: Liefert die zuletzt persistent gespeicherten Browser-Sessions (auch beendete).
+ *     tags:
+ *       - Browser Automation
+ *     parameters:
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           maximum: 200
+ *         description: Anzahl der Datensätze (Standard 50).
+ *     responses:
+ *       200:
+ *         description: Historische Sessions geladen
+ */
+router.get('/sessions/history', browserController.getSessionHistory);
+
+/**
+ * @openapi
+ * /browser/sessions/history/{sessionId}:
+ *   delete:
+ *     summary: Session-Eintrag aus der Historie entfernen
+ *     tags:
+ *       - Browser Automation
+ *     parameters:
+ *       - in: path
+ *         name: sessionId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Eintrag gelöscht
+ *       404:
+ *         description: Eintrag nicht gefunden
+ */
+router.delete('/sessions/history/:sessionId', browserController.deleteSessionHistoryEntry);
+
+/**
+ * @openapi
  * /browser/sessions:
  *   get:
  *     summary: Alle aktiven Sessions abrufen
@@ -471,7 +514,8 @@ router.get('/session/:sessionId/html', browserController.getPageHTML);
  * /browser/session/{sessionId}/elements:
  *   get:
  *     summary: Liste der DOM-Elemente abrufen
- *     description: Liefert Metadaten (Tag, Text, Attribute, Sichtbarkeit) für Elemente der aktuellen Seite.
+ *     description: Liefert Metadaten (Tag, Text, Attribute, Sichtbarkeit) für Elemente der aktuellen Seite
+ *       und persistiert sie für spätere Wiederverwendung.
  *     tags:
  *       - Browser Automation
  *     parameters:
@@ -485,7 +529,7 @@ router.get('/session/:sessionId/html', browserController.getPageHTML);
  *         required: false
  *         schema:
  *           type: string
- *         description: Kommagetrennte Liste von Tag-Namen (z. B. `button,input`).
+ *         description: Kommagetrennte Liste von Tag-Namen (z. B. `button,input`). Verwende `*` um alle Tags zurückzugeben.
  *       - in: query
  *         name: includeHidden
  *         required: false
@@ -497,10 +541,58 @@ router.get('/session/:sessionId/html', browserController.getPageHTML);
  *         required: false
  *         schema:
  *           type: integer
- *         description: Maximale Anzahl der zurückgegebenen Elemente.
+ *         description: Maximale Anzahl der zurückgegebenen Elemente (Standard 500).
  *     responses:
  *       200:
- *         description: Element-Liste
+ *         description: Aktueller Snapshot der Seite inklusive Elemente
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     website:
+ *                       type: object
+ *                       properties:
+ *                         id:
+ *                           type: integer
+ *                         url:
+ *                           type: string
+ *                         domain:
+ *                           type: string
+ *                         path:
+ *                           type: string
+ *                         title:
+ *                           type: string
+ *                           nullable: true
+ *                         lastScannedAt:
+ *                           type: string
+ *                           format: date-time
+*                         elementCount:
+*                           type: integer
+*                         totalElements:
+*                           type: integer
+*                     elements:
+*                       type: array
+*                       items:
+*                         type: object
+*                         properties:
+*                           tag:
+*                             type: string
+*                           selector:
+*                             type: string
+*                           text:
+*                             type: string
+*                           attributes:
+*                             type: object
+*                           visible:
+*                             type: boolean
+*                           disabled:
+*                             type: boolean
  */
 router.get('/session/:sessionId/elements', browserController.getPageElements);
 
