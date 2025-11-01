@@ -61,7 +61,7 @@ const swaggerDefinition = {
 const swaggerOptions = {
   definition: swaggerDefinition,
   // einfacher und robuster für dev:
-  apis: ["./src/**/*.ts"],
+  apis:  ["./src/**/*.ts", "./src/lib/swagger/**/*.swagger.yaml"],
 };
 
 const swaggerSpec = swaggerJsdoc(swaggerOptions);
@@ -111,6 +111,7 @@ app.use(express.json({ limit: "200mb" }));
 app.use(morgan(customMorganFormat));
 
 // ⛳ Swagger route zuerst mounten, OHNE dass Helmet uns blockt
+app.get("/docs-json", (_req, res) => res.json(swaggerSpec));
 app.use("/docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 // Danach Helmet aktivieren für den Rest
