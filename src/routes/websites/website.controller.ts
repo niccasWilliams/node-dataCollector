@@ -37,7 +37,7 @@ class WebsiteController {
         limit,
         offset,
         orderBy:
-          orderBy === "createdAt" || orderBy === "lastScannedAt"
+          orderBy === "createdAt" || orderBy === "updatedAt"
             ? orderBy
             : undefined,
         sortDirection:
@@ -91,6 +91,7 @@ class WebsiteController {
         success: true,
         data: {
           website: result.website,
+          page: result.page,
           elements: result.elements.items,
         },
         meta: {
@@ -188,6 +189,7 @@ class WebsiteController {
         success: true,
         data: {
           website: result.website,
+          page: result.page,
           elements: result.elements.items,
         },
         meta: {
@@ -230,13 +232,13 @@ class WebsiteController {
         options.limit = limit;
       }
 
-      const { website, elements } =
+      const { page, elements } =
         await websiteUseCase.captureSnapshotFromSession(sessionId, options);
 
       res.json({
         success: true,
         data: {
-          website,
+          page,
           elements,
         },
       });

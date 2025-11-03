@@ -1,21 +1,28 @@
 import type {
   SnapshotInput,
+  PageSnapshot,
   WebsiteElementListResult,
   WebsiteElementQuery,
   WebsiteListParams,
   WebsiteListResult,
-  WebsiteSnapshot,
+  WebsitePageListParams,
+  WebsitePageListResult,
   WebsiteWithStats,
+  WebsitePageWithStats,
 } from "./website.repository";
 import {
   getWebsiteById,
-  getWebsiteByUrl,
+  getWebsiteByDomain,
+  getWebsitePageById,
+  getWebsitePageByUrl,
   getWebsiteElements as getWebsiteElementsFromRepo,
   listWebsites as listWebsitesFromRepo,
+  listWebsitePages as listWebsitePagesFromRepo,
   storeWebsiteSnapshot,
 } from "./website.repository";
 
 class WebsiteService {
+  // Website (Domain) Level
   async listWebsites(params: WebsiteListParams = {}): Promise<WebsiteListResult> {
     return listWebsitesFromRepo(params);
   }
@@ -27,25 +34,46 @@ class WebsiteService {
     return getWebsiteById(websiteId);
   }
 
-  async getWebsiteByUrl(url: string): Promise<WebsiteWithStats | null> {
+  async getWebsiteByDomain(domain: string): Promise<WebsiteWithStats | null> {
+    if (typeof domain !== "string" || !domain.trim()) {
+      return null;
+    }
+    return getWebsiteByDomain(domain);
+  }
+
+  // Website Page (URL/Path) Level
+  async listWebsitePages(params: WebsitePageListParams = {}): Promise<WebsitePageListResult> {
+    return listWebsitePagesFromRepo(params);
+  }
+
+  async getWebsitePage(pageId: number): Promise<WebsitePageWithStats | null> {
+    if (!Number.isFinite(pageId) || pageId <= 0) {
+      return null;
+    }
+    return getWebsitePageById(pageId);
+  }
+
+  async getWebsitePageByUrl(url: string): Promise<WebsitePageWithStats | null> {
     if (typeof url !== "string" || !url.trim()) {
       return null;
     }
-    return getWebsiteByUrl(url);
+    return getWebsitePageByUrl(url);
   }
 
+  // Website Elements
   async getWebsiteElements(
-    websiteId: number,
+    pageId: number,
     query: WebsiteElementQuery = {}
   ): Promise<WebsiteElementListResult | null> {
-    const website = await this.getWebsite(websiteId);
-    if (!website) {
+    const page = await this.getWebsitePage(pageId);
+    if (!page) {
       return null;
     }
-    return getWebsiteElementsFromRepo(websiteId, query);
+    return getWebsiteElementsFromRepo(pageId, query);
   }
 
-  async saveSnapshot(input: SnapshotInput): Promise<WebsiteSnapshot> {
+  // Snapshot
+  async saveSnapshot(input: SnapshotInput): Promise<PageSnapshot> {
     return storeWebsiteSnapshot(input);
   }
 }
@@ -53,10 +81,13 @@ class WebsiteService {
 export const websiteService = new WebsiteService();
 export type {
   SnapshotInput,
+  PageSnapshot,
   WebsiteListParams,
   WebsiteListResult,
+  WebsitePageListParams,
+  WebsitePageListResult,
   WebsiteElementQuery,
   WebsiteElementListResult,
-  WebsiteSnapshot,
   WebsiteWithStats,
+  WebsitePageWithStats,
 };

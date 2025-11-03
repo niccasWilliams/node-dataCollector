@@ -1,6 +1,4 @@
 import { Request, Response } from "express";
-import { responseHandler } from "@/lib/communication";
-import { getExternalUserIdFromRequest } from "@/util/utils";
 import { browserHandler } from "@/services/browser";
 import { removeSessionHistoryEntry, fetchSessionHistory } from "@/services/browser/browser.repository";
 import type { ElementQueryOptions } from "@/types/browser.types";
@@ -52,7 +50,7 @@ try {
   }
     }
 
-    async getSessions(req: Request, res: Response) {
+    async getSessions(_req: Request, res: Response) {
         try {
     const sessions = browserHandler.getAllSessions();
     res.json({
@@ -541,6 +539,181 @@ async logout(req: Request, res: Response) {
         loggedOut,
       },
     });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+}
+
+// ============================================================================
+// Humanized Interactions
+// ============================================================================
+
+async clickHumanized(req: Request, res: Response) {
+  try {
+    const { sessionId } = req.params;
+    const { selector, button, clickCount } = req.body;
+
+    if (!selector || typeof selector !== 'string') {
+      return res.status(400).json({
+        success: false,
+        error: 'selector is required and must be a string',
+      });
+    }
+
+    await browserHandler.clickHumanized(sessionId, selector, { button, clickCount });
+    res.json({
+      success: true,
+      message: 'Element clicked with humanized movement',
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+}
+
+async typeHumanized(req: Request, res: Response) {
+  try {
+    const { sessionId } = req.params;
+    const { text, selector } = req.body;
+
+    if (!text || typeof text !== 'string') {
+      return res.status(400).json({
+        success: false,
+        error: 'text is required and must be a string',
+      });
+    }
+
+    await browserHandler.typeHumanized(sessionId, text, selector);
+    res.json({
+      success: true,
+      message: 'Text typed with humanized timing',
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+}
+
+async scrollHumanized(req: Request, res: Response) {
+  try {
+    const { sessionId } = req.params;
+    const { direction, amount, smooth } = req.body || {};
+
+    await browserHandler.scrollHumanized(sessionId, { direction, amount, smooth });
+    res.json({
+      success: true,
+      message: 'Page scrolled with humanized behavior',
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+}
+
+async simulateReading(req: Request, res: Response) {
+  try {
+    const { sessionId } = req.params;
+    const { duration } = req.body || {};
+
+    await browserHandler.simulateReading(sessionId, duration);
+    res.json({
+      success: true,
+      message: 'Reading behavior simulated',
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+}
+
+// ============================================================================
+// CAPTCHA Solving
+// ============================================================================
+
+async solveCaptchaAuto(req: Request, res: Response) {
+  try {
+    const { sessionId } = req.params;
+
+    const result = await browserHandler.solveCaptchaAuto(sessionId);
+
+    if (result) {
+      res.json({
+        success: true,
+        message: 'CAPTCHA solved successfully',
+        data: result,
+      });
+    } else {
+      res.json({
+        success: false,
+        message: 'No CAPTCHA found on page',
+        data: null,
+      });
+    }
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+}
+
+async solveRecaptchaV2(req: Request, res: Response) {
+  try {
+    const { sessionId } = req.params;
+
+    const solution = await browserHandler.solveRecaptchaV2(sessionId);
+
+    if (solution) {
+      res.json({
+        success: true,
+        message: 'reCAPTCHA v2 solved successfully',
+        data: { solution },
+      });
+    } else {
+      res.json({
+        success: false,
+        message: 'No reCAPTCHA v2 found on page',
+        data: null,
+      });
+    }
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+}
+
+async solveHCaptcha(req: Request, res: Response) {
+  try {
+    const { sessionId } = req.params;
+
+    const solution = await browserHandler.solveHCaptcha(sessionId);
+
+    if (solution) {
+      res.json({
+        success: true,
+        message: 'hCaptcha solved successfully',
+        data: { solution },
+      });
+    } else {
+      res.json({
+        success: false,
+        message: 'No hCaptcha found on page',
+        data: null,
+      });
+    }
   } catch (error: any) {
     res.status(500).json({
       success: false,

@@ -30,6 +30,64 @@ export interface BrowserConfig {
     width: number;
     height: number;
   };
+  /** Enable humanized interactions (mouse movements, typing, etc.) */
+  humanizedInteractions?: boolean;
+  /** CAPTCHA solver configuration */
+  captchaSolver?: {
+    provider: 'none' | '2captcha' | 'capsolver' | 'anticaptcha';
+    apiKey?: string;
+    timeout?: number;
+  };
+  /** Automatic cookie consent handling */
+  cookieConsent?: CookieConsentConfig;
+  /** Navigation defaults */
+  navigation?: {
+    waitUntil?: 'load' | 'domcontentloaded' | 'networkidle' | 'commit';
+    timeout?: number;
+  };
+}
+
+export interface CookieConsentConfig {
+  autoReject?: boolean;
+  /**
+   * Custom selectors to try when rejecting cookies (evaluated before keyword heuristics).
+   */
+  selectors?: string[];
+  /**
+   * Additional keywords that indicate a reject action.
+   */
+  keywords?: string[];
+  /**
+   * Keywords to explicitly avoid (e.g. "accept all").
+   */
+  ignoreKeywords?: string[];
+  /**
+   * How long to wait (ms) for a banner before giving up.
+   */
+  timeout?: number;
+  /**
+   * Delay after clicking reject so overlays can disappear (ms).
+   */
+  postClickDelay?: number;
+  /**
+   * Enable a short humanized warmup (delay, mouse move, scroll) before searching for banners.
+   * Defaults to true.
+   */
+  humanizedWarmup?: boolean;
+  /**
+   * Delay range in milliseconds before attempting to dismiss a banner.
+   */
+  warmupDelayRange?: {
+    min?: number;
+    max?: number;
+  };
+  /**
+   * Scroll distance range in pixels for the warmup behaviour.
+   */
+  warmupScrollRange?: {
+    min?: number;
+    max?: number;
+  };
 }
 
 export interface PageInteraction {

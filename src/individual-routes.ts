@@ -6,6 +6,8 @@ import express from "express";
 
 import browserRouter from "./routes/browser/browser.route";
 import { websiteRoutes } from "./routes/websites/website.route";
+import { productRoutes } from "./routes/products/product.route";
+import { productMatchingRouter } from "./routes/product-matching";
 
 /**
  * Register individual app-specific routes
@@ -15,14 +17,13 @@ const registerIndividualRoutes = (app: express.Application) => {
 
   // Browser automation routes
   app.use("/browser", browserRouter);
-  app.use("/websites", websiteRoutes)
+  app.use("/websites", websiteRoutes);
 
-  // Example: Add your individual routes here
-  // import articleRouter from "./routes/articles/article.route";
-  // app.use("/articles", articleRouter);
+  // Product tracking and price monitoring routes
+  app.use("/products", productRoutes);
 
-  // import orderRouter from "./routes/orders/order.route";
-  // app.use("/orders", orderRouter);
+  // Product matching and attributes routes
+  app.use("/product-matching", productMatchingRouter);
 
 };
 

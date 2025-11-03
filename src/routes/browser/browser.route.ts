@@ -799,4 +799,259 @@ router.post('/session/:sessionId/is-logged-in', browserController.isLoggedIn);
  */
 router.post('/session/:sessionId/logout', browserController.logout);
 
+/**
+ * @openapi
+ * tags:
+ *   - name: Humanized Interactions
+ *     description: Menschlich wirkende Browser-Interaktionen (Bezier-Kurven, Tippfehler, etc.) zur Vermeidung von Bot-Detection
+ */
+
+/**
+ * @openapi
+ * /browser/session/{sessionId}/click-humanized:
+ *   post:
+ *     summary: Element mit menschlicher Mausbewegung klicken
+ *     description: Klickt ein Element mit natürlicher Mausbewegung (Bezier-Kurven, variable Geschwindigkeit, gelegentliches Overshoot).
+ *     tags:
+ *       - Humanized Interactions
+ *     parameters:
+ *       - in: path
+ *         name: sessionId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - selector
+ *             properties:
+ *               selector:
+ *                 type: string
+ *                 description: CSS-Selector des Elements
+ *                 example: "button.submit"
+ *               button:
+ *                 type: string
+ *                 enum: [left, right, middle]
+ *                 description: Maustaste (Standard left)
+ *               clickCount:
+ *                 type: integer
+ *                 description: Anzahl der Klicks (z.B. 2 für Doppelklick)
+ *     responses:
+ *       200:
+ *         description: Element wurde geklickt
+ *       400:
+ *         description: Ungültige Parameter
+ *       500:
+ *         description: Fehler beim Klicken
+ */
+router.post('/session/:sessionId/click-humanized', browserController.clickHumanized);
+
+/**
+ * @openapi
+ * /browser/session/{sessionId}/type-humanized:
+ *   post:
+ *     summary: Text mit menschlichem Tippverhalten eingeben
+ *     description: Tippt Text mit variabler Geschwindigkeit, gelegentlichen Tippfehlern (3%) und natürlichen Pausen.
+ *     tags:
+ *       - Humanized Interactions
+ *     parameters:
+ *       - in: path
+ *         name: sessionId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - text
+ *             properties:
+ *               text:
+ *                 type: string
+ *                 description: Text, der eingetippt werden soll
+ *                 example: "Hallo Welt!"
+ *               selector:
+ *                 type: string
+ *                 description: Optional CSS-Selector eines Input-Felds (wird vorher angeklickt)
+ *                 example: "input[name='search']"
+ *     responses:
+ *       200:
+ *         description: Text wurde eingetippt
+ *       400:
+ *         description: Ungültige Parameter
+ *       500:
+ *         description: Fehler beim Tippen
+ */
+router.post('/session/:sessionId/type-humanized', browserController.typeHumanized);
+
+/**
+ * @openapi
+ * /browser/session/{sessionId}/scroll-humanized:
+ *   post:
+ *     summary: Seite mit menschlichem Scrollverhalten scrollen
+ *     description: Scrollt die Seite sanft und natürlich, wie es ein Mensch tun würde.
+ *     tags:
+ *       - Humanized Interactions
+ *     parameters:
+ *       - in: path
+ *         name: sessionId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               direction:
+ *                 type: string
+ *                 enum: [up, down]
+ *                 description: Scroll-Richtung (Standard down)
+ *               amount:
+ *                 type: integer
+ *                 description: Scroll-Distanz in Pixeln (Standard zufällig 200-600)
+ *               smooth:
+ *                 type: boolean
+ *                 description: Sanftes Scrollen in kleinen Schritten (Standard true)
+ *     responses:
+ *       200:
+ *         description: Seite wurde gescrollt
+ *       500:
+ *         description: Fehler beim Scrollen
+ */
+router.post('/session/:sessionId/scroll-humanized', browserController.scrollHumanized);
+
+/**
+ * @openapi
+ * /browser/session/{sessionId}/simulate-reading:
+ *   post:
+ *     summary: Menschliches Leseverhalten simulieren
+ *     description: Simuliert natürliches Leseverhalten mit zufälligen Mausbewegungen und gelegentlichem Scrollen.
+ *     tags:
+ *       - Humanized Interactions
+ *     parameters:
+ *       - in: path
+ *         name: sessionId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               duration:
+ *                 type: integer
+ *                 description: Dauer der Simulation in Millisekunden (Standard 2000-5000ms)
+ *     responses:
+ *       200:
+ *         description: Leseverhalten wurde simuliert
+ *       500:
+ *         description: Fehler bei der Simulation
+ */
+router.post('/session/:sessionId/simulate-reading', browserController.simulateReading);
+
+/**
+ * @openapi
+ * tags:
+ *   - name: CAPTCHA Solving
+ *     description: Automatisches Erkennen und Lösen von CAPTCHAs (reCAPTCHA, hCaptcha, etc.) via 2Captcha/CapSolver/Anti-Captcha
+ */
+
+/**
+ * @openapi
+ * /browser/session/{sessionId}/solve-captcha:
+ *   post:
+ *     summary: CAPTCHA automatisch erkennen und lösen
+ *     description: Erkennt automatisch welcher CAPTCHA-Typ auf der Seite ist (reCAPTCHA v2, hCaptcha, etc.) und löst ihn.
+ *     tags:
+ *       - CAPTCHA Solving
+ *     parameters:
+ *       - in: path
+ *         name: sessionId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: CAPTCHA erfolgreich gelöst oder nicht gefunden
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 message:
+ *                   type: string
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     type:
+ *                       type: string
+ *                       description: Erkannter CAPTCHA-Typ
+ *                       example: "recaptcha_v2"
+ *                     solution:
+ *                       type: string
+ *                       description: CAPTCHA-Token
+ *       500:
+ *         description: Fehler beim Lösen
+ */
+router.post('/session/:sessionId/solve-captcha', browserController.solveCaptchaAuto);
+
+/**
+ * @openapi
+ * /browser/session/{sessionId}/solve-recaptcha-v2:
+ *   post:
+ *     summary: reCAPTCHA v2 lösen
+ *     description: Sucht nach reCAPTCHA v2 auf der Seite und löst es.
+ *     tags:
+ *       - CAPTCHA Solving
+ *     parameters:
+ *       - in: path
+ *         name: sessionId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: reCAPTCHA v2 erfolgreich gelöst oder nicht gefunden
+ *       500:
+ *         description: Fehler beim Lösen
+ */
+router.post('/session/:sessionId/solve-recaptcha-v2', browserController.solveRecaptchaV2);
+
+/**
+ * @openapi
+ * /browser/session/{sessionId}/solve-hcaptcha:
+ *   post:
+ *     summary: hCaptcha lösen
+ *     description: Sucht nach hCaptcha auf der Seite und löst es.
+ *     tags:
+ *       - CAPTCHA Solving
+ *     parameters:
+ *       - in: path
+ *         name: sessionId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: hCaptcha erfolgreich gelöst oder nicht gefunden
+ *       500:
+ *         description: Fehler beim Lösen
+ */
+router.post('/session/:sessionId/solve-hcaptcha', browserController.solveHCaptcha);
+
 export default router;

@@ -1,5 +1,6 @@
 import { chromium, Browser, BrowserContext, Page } from 'patchright';
 import { EventEmitter } from 'events';
+import { logger } from '@/utils/logger';
 import type {
   BrowserSession,
   BrowserConfig,
@@ -12,6 +13,11 @@ import type {
   PageElement,
   LogoutOptions,
 } from '../../types/browser.types';
+import { SessionMonitor } from './session-monitor.service';
+import { URLTracker } from './url-tracker.service';
+import { HumanizedInteractionService } from './humanized-interaction.service';
+import { CaptchaSolverService, type CaptchaParams } from './captcha-solver.service';
+import { CookieConsentService } from './cookie-consent.service';
 
 const ELEMENT_COLLECTOR_FN = new Function(
   'params',
@@ -150,6 +156,16 @@ export class BrowserService extends EventEmitter {
   private page: Page | null = null;
   private session: BrowserSession | null = null;
   private config: BrowserConfig;
+
+  // Neue Services für robustes Session-Management
+  private sessionMonitor: SessionMonitor;
+  private urlTracker: URLTracker;
+
+  // Anti-Detection Services
+  private humanizedInteraction: HumanizedInteractionService | null = null;
+  private captchaSolver: CaptchaSolverService | null = null;
+  private cookieConsentService: CookieConsentService | null = null;
+
   private static readonly DEFAULT_LOGOUT_KEYWORDS = [
     'logout',
     'log out',
@@ -190,8 +206,44 @@ export class BrowserService extends EventEmitter {
         width: 1920,
         height: 1080,
       },
+      navigation: {
+        waitUntil: 'load',
+        timeout: 45000,
+      },
       ...config,
     };
+
+    // Initialisiere Session Monitor & URL Tracker
+    this.sessionMonitor = new SessionMonitor({
+      healthCheckInterval: 5000,
+      healthCheckTimeout: 3000,
+      autoMarkClosedOnDisconnect: true,
+    });
+
+    this.urlTracker = new URLTracker();
+
+    // Initialisiere Anti-Detection Services falls aktiviert
+    if (config.humanizedInteractions !== false) {
+      // Standard: aktiviert, außer explizit deaktiviert
+      this.humanizedInteraction = new HumanizedInteractionService();
+    }
+
+    if (config.captchaSolver && config.captchaSolver.provider !== 'none' && config.captchaSolver.apiKey) {
+      this.captchaSolver = new CaptchaSolverService({
+        provider: config.captchaSolver.provider as 'none' extends typeof config.captchaSolver.provider ? never : typeof config.captchaSolver.provider,
+        apiKey: config.captchaSolver.apiKey,
+        timeout: config.captchaSolver.timeout,
+      });
+    }
+
+    const cookieConsentConfig = this.config.cookieConsent ?? {};
+    this.config.cookieConsent = cookieConsentConfig;
+    if (cookieConsentConfig.autoReject !== false) {
+      this.cookieConsentService = new CookieConsentService(cookieConsentConfig);
+    }
+
+    // Forward Events von Services
+    this.setupServiceEventForwarding();
   }
 
   /**
@@ -224,19 +276,26 @@ export class BrowserService extends EventEmitter {
         hasTouch: false,
         isMobile: false,
         javaScriptEnabled: true,
+        // IMPORTANT: Bypass CSP to allow scraping of external sites
+        bypassCSP: true,
       });
 
       // Patchright handles most anti-detection internally via CDP patches
       // We only add minimal, safe enhancements that don't create detectable patterns
       await this.context.addInitScript(() => {
-        // Add chrome object (real Chrome has this)
+        // Add Chrome runtime objects for better stealth
         if (!(window as any).chrome) {
-          (window as any).chrome = {
-            runtime: {},
-            loadTimes: function() {},
-            csi: function() {},
-            app: {}
-          };
+          Object.defineProperty(window, 'chrome', {
+            writable: true,
+            enumerable: true,
+            configurable: false,
+            value: {
+              runtime: {},
+              loadTimes: function () {},
+              csi: function () {},
+              app: {},
+            },
+          });
         }
       });
 
@@ -255,6 +314,20 @@ export class BrowserService extends EventEmitter {
 
       // Setup page event listeners
       this.setupPageListeners();
+
+      // Starte Session Monitor & URL Tracker
+      this.sessionMonitor.startMonitoring(
+        this.session.id,
+        this.browser,
+        this.page,
+        this.session
+      );
+
+      this.urlTracker.startTracking(
+        this.session.id,
+        this.page,
+        this.session.currentUrl
+      );
 
       this.emit('session:created', this.session);
       return this.session;
@@ -297,19 +370,83 @@ export class BrowserService extends EventEmitter {
   }
 
   /**
+   * Synchronisiert Session mit aktuellem Browser-Status
+   * WICHTIG: Wird vor jeder Aktion aufgerufen!
+   */
+  private async syncSession(): Promise<void> {
+    if (!this.session || !this.page) return;
+
+    try {
+      // Prüfe ob Browser noch connected ist
+      if (!this.browser?.isConnected()) {
+        throw new Error(
+          `Browser session ${this.session.id} is disconnected. Please create a new session.`
+        );
+      }
+
+      // Hole aktuelle URL & Title vom Browser
+      const currentUrl = this.page.url();
+      const currentTitle = await this.page.title().catch(() => null);
+
+      // Prüfe ob sich URL geändert hat (manuelle Navigation)
+      if (currentUrl !== this.session.currentUrl) {
+        console.log(
+          `[BrowserService] Session ${this.session.id}: URL changed from ${this.session.currentUrl} to ${currentUrl}`
+        );
+
+        // Update Session
+        this.updateSession({
+          currentUrl,
+          title: currentTitle,
+        });
+
+        // Registriere bei URLTracker falls noch nicht geschehen
+        // (Falls manuelle Navigation, wird es vom URLTracker Event-Handler gecatcht)
+      }
+
+      // Update Title falls geändert
+      if (currentTitle && currentTitle !== this.session.title) {
+        this.updateSession({
+          title: currentTitle,
+        });
+      }
+    } catch (error) {
+      console.error(`[BrowserService] Session sync failed:`, error);
+      throw error;
+    }
+  }
+
+  /**
    * Navigate to URL
    */
   async navigate(options: NavigationOptions): Promise<void> {
     this.ensureInitialized();
+    await this.syncSession();
 
     try {
       this.updateSession({ status: 'navigating' });
       this.emit('navigation:start', options);
 
+      const waitUntil = options.waitUntil || this.config.navigation?.waitUntil || 'networkidle';
+      const timeout = options.timeout || this.config.navigation?.timeout || 30000;
+
       await this.page!.goto(options.url, {
-        waitUntil: options.waitUntil || 'networkidle',
-        timeout: options.timeout || 30000,
+        waitUntil,
+        timeout,
       });
+
+      // Wait for dynamic content (like cookie banners) to load
+      await this.page!.waitForTimeout(1500);
+
+      const cookieHandled = await this.handleCookieConsent().catch((error) => {
+        logger.debug(`[BrowserService] Cookie consent handling error: ${String(error)}`);
+        return false;
+      });
+
+      // If cookie banner was handled, wait for page to re-render
+      if (cookieHandled) {
+        await this.page!.waitForTimeout(800);
+      }
 
       const title = await this.page!.title();
       this.updateSession({
@@ -317,6 +454,13 @@ export class BrowserService extends EventEmitter {
         currentUrl: options.url,
         title,
       });
+
+      // Registriere programmatische Navigation beim URLTracker
+      this.urlTracker.registerProgrammaticNavigation(
+        this.session!.id,
+        options.url,
+        title
+      );
 
       this.emit('navigation:complete', {
         url: options.url,
@@ -329,11 +473,252 @@ export class BrowserService extends EventEmitter {
     }
   }
 
+  private async handleCookieConsent(): Promise<boolean> {
+    if (!this.cookieConsentService || !this.page) {
+      return false;
+    }
+
+    try {
+      await this.performConsentWarmup();
+
+      const cookieContainerSelectors = [
+        '#sp-cc',
+        '.sc-c62f2214-2',
+        '#onetrust-banner-sdk',
+        "[data-cookiebanner]",
+        "[aria-label*='Cookie']",
+        "[role='dialog']",
+      ];
+
+      const isBannerVisible = async (): Promise<boolean> => {
+        return this.page!.evaluate((selectors) => {
+          return selectors.some((selector: string) => {
+            const element = document.querySelector<HTMLElement>(selector);
+            if (!element) return false;
+            const style = window.getComputedStyle(element);
+            if (style.display === 'none' || style.visibility === 'hidden') return false;
+            const rect = element.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0;
+          });
+        }, cookieContainerSelectors);
+      };
+
+      const quickSelectors = [
+        ...(this.config.cookieConsent?.selectors ?? []),
+        // Amazon
+        '#sp-cc-rejectall-link',
+        '#sp-cc-reject-all-link',
+        "button[data-action='sp-cc-rejectall']",
+        "input[name='sp-cc-rejectall']",
+        // Generic
+        "button[data-testid='reject-all-button']",
+        "[data-cookiebanner='reject_button']",
+        '#onetrust-reject-all-handler',
+        'button#onetrust-reject-all-handler',
+        'button[aria-label="Ablehnen"]',
+        'button[aria-label="Alle ablehnen"]',
+      ];
+
+      let handled = false;
+
+      for (const selector of quickSelectors) {
+        if (!selector) continue;
+        const handle = await this.page.$(selector);
+        if (!handle) {
+          continue;
+        }
+
+        const visible = await handle.isVisible().catch(() => false);
+        if (!visible) {
+          await handle.dispose();
+          continue;
+        }
+
+        let clicked = false;
+        try {
+          await this.interact({ type: 'click', selector });
+          clicked = true;
+        } catch (interactionError) {
+          logger.debug(`[BrowserService] Quick cookie reject click failed (${selector}): ${String(interactionError)}`);
+        }
+
+        if (clicked) {
+          const postClickDelay = this.config.cookieConsent?.postClickDelay ?? 900;
+          if (postClickDelay > 0) {
+            await this.page.waitForTimeout(postClickDelay);
+          }
+
+          const disappeared = !(await isBannerVisible());
+
+          if (disappeared) {
+            this.emit('cookie:rejected', {
+              selector,
+              label: 'quick-selector',
+            });
+            handled = true;
+            await handle.dispose();
+            break;
+          }
+        }
+
+        await handle.dispose();
+      }
+
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const candidate = await this.cookieConsentService.findRejectCandidate(this.page);
+        if (!candidate) {
+          const stillVisible = await isBannerVisible();
+          if (!stillVisible) {
+            return handled;
+          }
+          await this.page.waitForTimeout(400);
+          continue;
+        }
+
+        logger.debug(
+          `[BrowserService] Rejecting cookies using selector "${candidate.selector}" (${candidate.label})`
+        );
+
+        await this.page.evaluate((selector) => {
+          const target = document.querySelector<HTMLElement>(selector);
+          if (target) {
+            try {
+              target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            } catch {
+              target.scrollIntoView();
+            }
+          }
+        }, candidate.selector);
+
+        let clicked = false;
+        try {
+          await this.interact({ type: 'click', selector: candidate.selector });
+          clicked = true;
+        } catch (interactionError) {
+          logger.debug(
+            `[BrowserService] Humanized click failed for cookie banner (${candidate.selector}): ${String(
+              interactionError
+            )}`
+          );
+          await this.page.click(candidate.selector).then(() => {
+            clicked = true;
+          }).catch((fallbackError) => {
+            logger.debug(
+              `[BrowserService] Direct click fallback failed for cookie banner (${candidate.selector}): ${String(
+                fallbackError
+              )}`
+            );
+          });
+        }
+
+        if (!clicked) {
+          continue;
+        }
+
+        const postClickDelay = this.config.cookieConsent?.postClickDelay ?? 900;
+        if (postClickDelay > 0) {
+          await this.page.waitForTimeout(postClickDelay);
+        }
+
+        const disappeared = !(await isBannerVisible());
+
+        this.emit('cookie:rejected', {
+          selector: candidate.selector,
+          label: candidate.label,
+        });
+
+        if (disappeared) {
+          return true;
+        }
+
+        handled = true;
+
+        // Banner might have disappeared already, check first
+        const stillVisibleAfterReject = await isBannerVisible();
+        if (!stillVisibleAfterReject) {
+          return true;
+        }
+      }
+
+      return handled;
+    } catch (error) {
+      logger.debug(`[BrowserService] Cookie consent handling failed: ${String(error)}`);
+      return false;
+    }
+  }
+
+  private randomInt(min: number, max: number): number {
+    const lower = Math.ceil(min);
+    const upper = Math.floor(max);
+    return Math.floor(Math.random() * (upper - lower + 1)) + lower;
+  }
+
+  private clamp(value: number, min: number, max: number): number {
+    return Math.min(Math.max(value, min), max);
+  }
+
+  private async performConsentWarmup(): Promise<void> {
+    if (!this.page) {
+      return;
+    }
+
+    const enableWarmup = this.config.cookieConsent?.humanizedWarmup ?? true;
+    if (!enableWarmup) {
+      return;
+    }
+
+    const delayRange = this.config.cookieConsent?.warmupDelayRange ?? { min: 650, max: 1400 };
+    const minDelay = Math.max(0, delayRange.min ?? 350);
+    const maxDelay = Math.max(minDelay, delayRange.max ?? 900);
+    await this.page.waitForTimeout(this.randomInt(minDelay, maxDelay));
+
+    const viewport = this.page.viewportSize() ?? { width: 1280, height: 720 };
+    const target = {
+      x: this.randomInt(Math.floor(viewport.width * 0.2), Math.floor(viewport.width * 0.8)),
+      y: this.randomInt(Math.floor(viewport.height * 0.2), Math.floor(viewport.height * 0.8)),
+    };
+
+    try {
+      if (this.humanizedInteraction) {
+        await this.humanizedInteraction.moveMouseTo(this.page, target);
+        if (Math.random() < 0.45) {
+          const offsetTarget = {
+            x: this.clamp(target.x + this.randomInt(-80, 80), 10, viewport.width - 10),
+            y: this.clamp(target.y + this.randomInt(-60, 60), 10, viewport.height - 10),
+          };
+          await this.page.waitForTimeout(this.randomInt(120, 320));
+          await this.humanizedInteraction.moveMouseTo(this.page, offsetTarget);
+        }
+      } else {
+        await this.page.mouse.move(target.x, target.y, { steps: this.randomInt(6, 14) });
+      }
+    } catch (error) {
+      logger.debug(`[BrowserService] Warmup mouse movement failed: ${String(error)}`);
+    }
+
+    const scrollRange = this.config.cookieConsent?.warmupScrollRange ?? { min: 160, max: 420 };
+    const scrollDistance = this.randomInt(scrollRange.min ?? 120, scrollRange.max ?? 360);
+
+    try {
+      await this.page.evaluate((distance) => {
+        try {
+          window.scrollBy({ top: distance, left: 0, behavior: 'smooth' });
+        } catch {
+          window.scrollBy(distance, 0);
+        }
+      }, scrollDistance);
+      await this.page.waitForTimeout(this.randomInt(180, 420));
+    } catch (error) {
+      logger.debug(`[BrowserService] Warmup scroll failed: ${String(error)}`);
+    }
+  }
+
   /**
    * Take screenshot
    */
   async screenshot(options: ScreenshotOptions = {}): Promise<Buffer> {
     this.ensureInitialized();
+    await this.syncSession();
 
     try {
       const screenshot = await this.page!.screenshot({
@@ -357,22 +742,35 @@ export class BrowserService extends EventEmitter {
 
   /**
    * Interact with page elements
+   * Automatically uses humanized interactions if enabled in config
    */
   async interact(interaction: PageInteraction): Promise<void> {
     this.ensureInitialized();
+    await this.syncSession();
 
     try {
       const { type, selector, value, options } = interaction;
 
+      // Use humanized interactions if enabled
+      const useHumanized = this.config.humanizedInteractions !== false && this.humanizedInteraction;
+
       switch (type) {
         case 'click':
           if (!selector) throw new Error('Selector required for click');
-          await this.page!.click(selector, options);
+          if (useHumanized) {
+            await this.humanizedInteraction!.clickElement(this.page!, selector, options);
+          } else {
+            await this.page!.click(selector, options);
+          }
           break;
 
         case 'type':
           if (!selector || !value) throw new Error('Selector and value required for type');
-          await this.page!.fill(selector, value);
+          if (useHumanized) {
+            await this.humanizedInteraction!.typeText(this.page!, value, selector);
+          } else {
+            await this.page!.fill(selector, value);
+          }
           break;
 
         case 'select':
@@ -386,10 +784,17 @@ export class BrowserService extends EventEmitter {
           break;
 
         case 'scroll':
-          await this.page!.evaluate(
-            ({ x, y }) => window.scrollTo(x || 0, y || 0),
-            options || {}
-          );
+          if (useHumanized) {
+            const y = options?.y || 0;
+            const direction = y < 0 ? 'up' : 'down';
+            const amount = Math.abs(y);
+            await this.humanizedInteraction!.scroll(this.page!, { direction, amount });
+          } else {
+            await this.page!.evaluate(
+              ({ x, y }) => window.scrollTo(x || 0, y || 0),
+              options || {}
+            );
+          }
           break;
 
         default:
@@ -397,7 +802,7 @@ export class BrowserService extends EventEmitter {
       }
 
       this.updateSession({ status: 'idle' });
-      this.emit('interaction:complete', interaction);
+      this.emit('interaction:complete', { ...interaction, humanized: useHumanized });
     } catch (error) {
       this.emit('interaction:error', { interaction, error });
       throw error;
@@ -683,12 +1088,275 @@ export class BrowserService extends EventEmitter {
   }
 
   /**
+   * Click element with humanized mouse movement
+   */
+  async clickHumanized(selector: string, options: { button?: 'left' | 'right' | 'middle'; clickCount?: number } = {}): Promise<void> {
+    this.ensureInitialized();
+    await this.syncSession();
+
+    if (!this.humanizedInteraction) {
+      throw new Error('Humanized interactions are disabled. Enable them in BrowserConfig.');
+    }
+
+    try {
+      await this.humanizedInteraction.clickElement(this.page!, selector, options);
+      this.updateSession({ status: 'idle' });
+      this.emit('interaction:complete', { type: 'click', selector, humanized: true });
+    } catch (error) {
+      this.emit('interaction:error', { interaction: { type: 'click', selector }, error });
+      throw error;
+    }
+  }
+
+  /**
+   * Type text with humanized timing and occasional typos
+   */
+  async typeHumanized(text: string, selector?: string): Promise<void> {
+    this.ensureInitialized();
+    await this.syncSession();
+
+    if (!this.humanizedInteraction) {
+      throw new Error('Humanized interactions are disabled. Enable them in BrowserConfig.');
+    }
+
+    try {
+      await this.humanizedInteraction.typeText(this.page!, text, selector);
+      this.updateSession({ status: 'idle' });
+      this.emit('interaction:complete', { type: 'type', selector, humanized: true });
+    } catch (error) {
+      this.emit('interaction:error', { interaction: { type: 'type', selector }, error });
+      throw error;
+    }
+  }
+
+  /**
+   * Scroll page with humanized behavior
+   */
+  async scrollHumanized(options: { direction?: 'up' | 'down'; amount?: number; smooth?: boolean } = {}): Promise<void> {
+    this.ensureInitialized();
+    await this.syncSession();
+
+    if (!this.humanizedInteraction) {
+      throw new Error('Humanized interactions are disabled. Enable them in BrowserConfig.');
+    }
+
+    try {
+      await this.humanizedInteraction.scroll(this.page!, options);
+      this.updateSession({ status: 'idle' });
+      this.emit('interaction:complete', { type: 'scroll', humanized: true });
+    } catch (error) {
+      this.emit('interaction:error', { interaction: { type: 'scroll' }, error });
+      throw error;
+    }
+  }
+
+  /**
+   * Simulate human reading behavior (random mouse movements and scrolling)
+   */
+  async simulateReading(duration?: number): Promise<void> {
+    this.ensureInitialized();
+    await this.syncSession();
+
+    if (!this.humanizedInteraction) {
+      throw new Error('Humanized interactions are disabled. Enable them in BrowserConfig.');
+    }
+
+    try {
+      await this.humanizedInteraction.simulateReading(this.page!, duration);
+      this.updateSession({ status: 'idle' });
+      this.emit('interaction:complete', { type: 'reading', humanized: true });
+    } catch (error) {
+      this.emit('interaction:error', { interaction: { type: 'reading' }, error });
+      throw error;
+    }
+  }
+
+  /**
+   * Solve CAPTCHA manually with specific parameters
+   */
+  async solveCaptcha(params: CaptchaParams): Promise<string> {
+    this.ensureInitialized();
+    await this.syncSession();
+
+    if (!this.captchaSolver) {
+      throw new Error('CAPTCHA solver is not configured. Add captchaSolver configuration to BrowserConfig.');
+    }
+
+    try {
+      const solution = await this.captchaSolver.solve(params);
+      this.emit('captcha:solved', { type: params.type, taskId: solution.taskId, solveTime: solution.solveTime });
+      return solution.solution;
+    } catch (error) {
+      this.emit('captcha:error', { type: params.type, error });
+      throw error;
+    }
+  }
+
+  /**
+   * Auto-detect and solve reCAPTCHA v2 on current page
+   */
+  async solveRecaptchaV2(): Promise<string | null> {
+    this.ensureInitialized();
+    await this.syncSession();
+
+    if (!this.captchaSolver) {
+      throw new Error('CAPTCHA solver is not configured. Add captchaSolver configuration to BrowserConfig.');
+    }
+
+    try {
+      const solution = await this.captchaSolver.solveRecaptchaV2OnPage(this.page!);
+      if (solution) {
+        this.emit('captcha:solved', { type: 'recaptcha_v2', auto: true });
+      }
+      return solution;
+    } catch (error) {
+      this.emit('captcha:error', { type: 'recaptcha_v2', error });
+      throw error;
+    }
+  }
+
+  /**
+   * Auto-detect and solve hCaptcha on current page
+   */
+  async solveHCaptcha(): Promise<string | null> {
+    this.ensureInitialized();
+    await this.syncSession();
+
+    if (!this.captchaSolver) {
+      throw new Error('CAPTCHA solver is not configured. Add captchaSolver configuration to BrowserConfig.');
+    }
+
+    try {
+      const solution = await this.captchaSolver.solveHCaptchaOnPage(this.page!);
+      if (solution) {
+        this.emit('captcha:solved', { type: 'hcaptcha', auto: true });
+      }
+      return solution;
+    } catch (error) {
+      this.emit('captcha:error', { type: 'hcaptcha', error });
+      throw error;
+    }
+  }
+
+  /**
+   * Auto-detect and solve any CAPTCHA on current page
+   * Tries all supported CAPTCHA types in order
+   */
+  async solveAnyCaptcha(): Promise<{ type: string; solution: string } | null> {
+    this.ensureInitialized();
+    await this.syncSession();
+
+    if (!this.captchaSolver) {
+      throw new Error('CAPTCHA solver is not configured. Add captchaSolver configuration to BrowserConfig.');
+    }
+
+    // Detect CAPTCHA type by checking for specific elements/iframes
+    const captchaInfo = await this.page!.evaluate(() => {
+      const results: { type: string; found: boolean; sitekey?: string }[] = [];
+
+      // Check for reCAPTCHA v2
+      const recaptchaV2Frame = Array.from(document.querySelectorAll('iframe')).find(
+        (frame) => frame.src.includes('google.com/recaptcha/api2/anchor')
+      );
+      if (recaptchaV2Frame) {
+        const url = new URL(recaptchaV2Frame.src);
+        const sitekey = url.searchParams.get('k');
+        results.push({ type: 'recaptcha_v2', found: true, sitekey: sitekey || undefined });
+      }
+
+      // Check for reCAPTCHA v3 (harder to detect, look for grecaptcha object)
+      if ((window as any).grecaptcha) {
+        results.push({ type: 'recaptcha_v3', found: true });
+      }
+
+      // Check for hCaptcha
+      const hcaptchaFrame = Array.from(document.querySelectorAll('iframe')).find(
+        (frame) => frame.src.includes('hcaptcha.com/captcha')
+      );
+      if (hcaptchaFrame) {
+        const container = document.querySelector('[data-sitekey]') as HTMLElement | null;
+        const sitekey = container?.getAttribute('data-sitekey');
+        results.push({ type: 'hcaptcha', found: true, sitekey: sitekey || undefined });
+      }
+
+      // Check for FunCaptcha
+      const funcaptcha = document.querySelector('[data-public-key]') as HTMLElement | null;
+      if (funcaptcha) {
+        results.push({ type: 'funcaptcha', found: true });
+      }
+
+      // Check for GeeTest
+      if ((window as any).initGeetest) {
+        results.push({ type: 'geetest', found: true });
+      }
+
+      return results.filter((r) => r.found);
+    });
+
+    if (captchaInfo.length === 0) {
+      this.emit('captcha:notfound');
+      return null;
+    }
+
+    // Try to solve the first detected CAPTCHA
+    for (const info of captchaInfo) {
+      try {
+        let solution: string | null = null;
+
+        switch (info.type) {
+          case 'recaptcha_v2':
+            this.emit('captcha:detected', { type: 'recaptcha_v2', sitekey: info.sitekey });
+            solution = await this.solveRecaptchaV2();
+            break;
+
+          case 'hcaptcha':
+            this.emit('captcha:detected', { type: 'hcaptcha', sitekey: info.sitekey });
+            solution = await this.solveHCaptcha();
+            break;
+
+          case 'recaptcha_v3':
+            this.emit('captcha:detected', { type: 'recaptcha_v3' });
+            // reCAPTCHA v3 is harder to auto-solve, requires action parameter
+            this.emit('captcha:warning', {
+              type: 'recaptcha_v3',
+              message: 'reCAPTCHA v3 detected but requires manual configuration (action parameter)',
+            });
+            break;
+
+          default:
+            this.emit('captcha:warning', {
+              type: info.type,
+              message: `${info.type} detected but auto-solving not yet implemented`,
+            });
+        }
+
+        if (solution) {
+          return { type: info.type, solution };
+        }
+      } catch (error) {
+        this.emit('captcha:error', { type: info.type, error });
+        // Continue to next CAPTCHA type
+      }
+    }
+
+    return null;
+  }
+
+  /**
    * Close browser session
    */
   async close(): Promise<void> {
     if (!this.browser) return;
 
     try {
+      const sessionId = this.session?.id;
+
+      // Stoppe Monitoring & Tracking
+      if (sessionId) {
+        this.sessionMonitor.stopMonitoring(sessionId);
+        this.urlTracker.stopTracking(sessionId);
+      }
+
       await this.browser.close();
       this.browser = null;
       this.context = null;
@@ -696,7 +1364,10 @@ export class BrowserService extends EventEmitter {
 
       if (this.session) {
         this.updateSession({ status: 'closed' });
-        this.emit('session:closed', this.session);
+        this.emit('session:closed', {
+          session: this.session,
+          reason: 'manual',
+        });
       }
 
       this.session = null;
@@ -711,6 +1382,51 @@ export class BrowserService extends EventEmitter {
    */
   isInitialized(): boolean {
     return this.browser !== null && this.page !== null;
+  }
+
+  /**
+   * Setup Event Forwarding von Services
+   */
+  private setupServiceEventForwarding(): void {
+    // Forward SessionMonitor Events
+    this.sessionMonitor.on('browser:disconnected', (event) => {
+      this.emit('browser:disconnected', event);
+
+      // Update Session Status
+      if (this.session && event.sessionId === this.session.id) {
+        this.updateSession({ status: 'closed' });
+      }
+    });
+
+    this.sessionMonitor.on('browser:health', (event) => {
+      this.emit('browser:health', event);
+    });
+
+    this.sessionMonitor.on('session:closed', (event) => {
+      this.emit('session:closed', event);
+    });
+
+    // Forward URLTracker Events
+    this.urlTracker.on('url:changed', (event) => {
+      this.emit('url:changed', event);
+
+      // Auto-Update Session bei URL-Änderungen
+      if (this.session && event.sessionId === this.session.id) {
+        this.updateSession({
+          currentUrl: event.currentUrl,
+          title: event.title,
+        });
+
+        // Emit auch session:updated Event
+        this.emit('session:updated', {
+          session: this.session,
+          changes: {
+            currentUrl: event.currentUrl,
+            title: event.title,
+          },
+        });
+      }
+    });
   }
 
   // Private helper methods
@@ -732,7 +1448,7 @@ export class BrowserService extends EventEmitter {
   }
 
   private generateSessionId(): string {
-    return `browser-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    return `browser-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
   }
 
   private async clickSelectorWithOptionalWait(

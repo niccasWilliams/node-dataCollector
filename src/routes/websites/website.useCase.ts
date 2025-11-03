@@ -4,22 +4,27 @@ import type { PageElement } from "@/types/browser.types";
 import {
   websiteService,
   type SnapshotInput,
+  type PageSnapshot,
   type WebsiteElementListResult,
   type WebsiteElementQuery,
   type WebsiteListParams,
   type WebsiteListResult,
-  type WebsiteSnapshot,
+  type WebsitePageListParams,
+  type WebsitePageListResult,
   type WebsiteWithStats,
+  type WebsitePageWithStats,
 } from "./website.service";
 
 export type WebsiteElementsResponse = {
-  website: WebsiteWithStats;
+  website: WebsiteWithStats | null;
+  page: WebsitePageWithStats;
   elements: WebsiteElementListResult;
 };
 
 export type SessionSnapshotOptions = ElementQueryOptions;
 
 class WebsiteUseCase {
+  // Website (Domain) Level
   async listWebsites(params: WebsiteListParams = {}): Promise<WebsiteListResult> {
     return websiteService.listWebsites(params);
   }
@@ -28,27 +33,49 @@ class WebsiteUseCase {
     return websiteService.getWebsite(websiteId);
   }
 
+  async getWebsiteByDomain(domain: string): Promise<WebsiteWithStats | null> {
+    return websiteService.getWebsiteByDomain(domain);
+  }
+
+  // Website Page (URL/Path) Level
+  async listWebsitePages(params: WebsitePageListParams = {}): Promise<WebsitePageListResult> {
+    return websiteService.listWebsitePages(params);
+  }
+
+  async getWebsitePage(pageId: number): Promise<WebsitePageWithStats | null> {
+    return websiteService.getWebsitePage(pageId);
+  }
+
+  async getWebsitePageByUrl(url: string): Promise<WebsitePageWithStats | null> {
+    return websiteService.getWebsitePageByUrl(url);
+  }
+
+  // Website Elements
   async getWebsiteElements(
-    websiteId: number,
+    pageId: number,
     options: WebsiteElementQuery = {}
   ): Promise<WebsiteElementsResponse | null> {
-    const website = await websiteService.getWebsite(websiteId);
-    if (!website) {
+    const page = await websiteService.getWebsitePage(pageId);
+    if (!page) {
       return null;
     }
 
-    const elements = await websiteService.getWebsiteElements(websiteId, options);
+    const website = await websiteService.getWebsite(page.websiteId);
+
+    const elements = await websiteService.getWebsiteElements(pageId, options);
     if (!elements) {
       return null;
     }
 
     return {
       website,
+      page,
       elements,
     };
   }
 
-  async saveSnapshot(snapshot: SnapshotInput): Promise<WebsiteSnapshot> {
+  // Snapshot
+  async saveSnapshot(snapshot: SnapshotInput): Promise<PageSnapshot> {
     return websiteService.saveSnapshot(snapshot);
   }
 
@@ -56,7 +83,7 @@ class WebsiteUseCase {
     sessionId: string,
     options: SessionSnapshotOptions = {}
   ): Promise<{
-    website: WebsiteSnapshot | null;
+    page: PageSnapshot | null;
     elements: PageElement[];
   }> {
     const result = await browserHandler.getElements(sessionId, options);
@@ -67,15 +94,18 @@ class WebsiteUseCase {
     url: string,
     options: WebsiteElementQuery = {}
   ): Promise<WebsiteElementsResponse | null> {
-    const website = await websiteService.getWebsiteByUrl(url);
-    if (!website) {
+    const page = await websiteService.getWebsitePageByUrl(url);
+    if (!page) {
       return null;
     }
 
-    const elements = await websiteService.getWebsiteElements(website.id, options);
+    const website = await websiteService.getWebsite(page.websiteId);
+
+    const elements = await websiteService.getWebsiteElements(page.id, options);
     if (!elements) {
       return {
         website,
+        page,
         elements: {
           items: [],
           total: 0,
@@ -87,6 +117,7 @@ class WebsiteUseCase {
 
     return {
       website,
+      page,
       elements,
     };
   }

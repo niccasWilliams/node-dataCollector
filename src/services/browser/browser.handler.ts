@@ -11,7 +11,7 @@ import type {
   LogoutOptions,
 } from '../../types/browser.types';
 import type { BrowserActivityType } from '@/db/individual/individual-schema';
-import { storeWebsiteSnapshot, type WebsiteSnapshot, INTERACTIVE_TAGS } from '../../routes/websites/website.repository';
+import { storeWebsiteSnapshot, type PageSnapshot, INTERACTIVE_TAGS } from '../../routes/websites/website.repository';
 
 /**
  * BrowserUseCase - High-level API for browser automation
@@ -166,7 +166,7 @@ export class BrowserHandler {
   async getElements(
     sessionId: string,
     options?: ElementQueryOptions
-  ): Promise<{ website: WebsiteSnapshot | null; elements: PageElement[] }> {
+  ): Promise<{ page: PageSnapshot | null; elements: PageElement[] }> {
     const service = this.getService(sessionId);
     const evaluateOptions: ElementQueryOptions = {
       ...(options || {}),
@@ -183,7 +183,7 @@ export class BrowserHandler {
 
     const elements = await service.getElements(evaluateOptions);
 
-    let website: WebsiteSnapshot | null = null;
+    let page: PageSnapshot | null = null;
     try {
       const pageInfo = await service.getPageInfo();
       let html: string | undefined;
@@ -193,7 +193,7 @@ export class BrowserHandler {
         console.warn('[BrowserHandler] Failed to fetch page HTML for snapshot', htmlError);
       }
 
-      website = await storeWebsiteSnapshot({
+      page = await storeWebsiteSnapshot({
         url: pageInfo.url,
         title: pageInfo.title,
         html,
@@ -208,12 +208,13 @@ export class BrowserHandler {
       metadata: {
         options: evaluateOptions,
         returnedCount: elements.length,
-        storedInteractiveCount: website?.elementCount ?? 0,
-        websiteId: website?.id ?? null,
+        storedInteractiveCount: page?.elementCount ?? 0,
+        websiteId: page?.websiteId ?? null,
+        pageId: page?.pageId ?? null,
       },
     });
 
-    return { website, elements };
+    return { page, elements };
   }
 
   /**
@@ -355,9 +356,11 @@ export class BrowserHandler {
   ): Promise<void> {
     switch (event) {
       case 'session:closed': {
-        const session = payload as BrowserSession;
-        await this.persistSessionData(session);
-        this.sessionConfigs.delete(session.id);
+        const session = payload?.session as BrowserSession | undefined;
+        if (session) {
+          await this.persistSessionData(session);
+          this.sessionConfigs.delete(session.id);
+        }
         break;
       }
       case 'navigation:start': {
@@ -412,6 +415,15 @@ export class BrowserHandler {
           success: false,
           error: errorMessage,
           metadata: interaction ? { options: interaction.options ?? null } : undefined,
+        });
+        break;
+      }
+      case 'cookie:rejected': {
+        await this.persistCurrentSession(service);
+        const session = service.getSession();
+        await this.logActivity(session?.id, 'interaction', 'cookie:rejected', {
+          target: payload?.selector,
+          metadata: payload ? { label: payload.label ?? null } : undefined,
         });
         break;
       }
@@ -521,6 +533,12 @@ export class BrowserHandler {
       'page:console',
       'page:error',
       'page:requestfailed',
+      'cookie:rejected',
+      'captcha:detected',
+      'captcha:solved',
+      'captcha:error',
+      'captcha:notfound',
+      'captcha:warning',
       'error',
     ];
 
@@ -568,6 +586,99 @@ export class BrowserHandler {
     extractor: () => T
   ): Promise<T> {
     return await this.evaluate(sessionId, extractor);
+  }
+
+  /**
+   * Click element with humanized mouse movement (Bezier curves)
+   */
+  async clickHumanized(sessionId: string, selector: string, options?: { button?: 'left' | 'right' | 'middle'; clickCount?: number }): Promise<void> {
+    const service = this.getService(sessionId);
+    await service.clickHumanized(selector, options);
+    await this.persistCurrentSession(service);
+    await this.logActivity(sessionId, 'interaction', 'click-humanized', {
+      target: selector,
+      metadata: { humanized: true, options },
+    });
+  }
+
+  /**
+   * Type text with humanized timing and occasional typos
+   */
+  async typeHumanized(sessionId: string, text: string, selector?: string): Promise<void> {
+    const service = this.getService(sessionId);
+    await service.typeHumanized(text, selector);
+    await this.persistCurrentSession(service);
+    await this.logActivity(sessionId, 'interaction', 'type-humanized', {
+      target: selector,
+      value: text,
+      metadata: { humanized: true },
+    });
+  }
+
+  /**
+   * Scroll page with humanized behavior
+   */
+  async scrollHumanized(sessionId: string, options?: { direction?: 'up' | 'down'; amount?: number; smooth?: boolean }): Promise<void> {
+    const service = this.getService(sessionId);
+    await service.scrollHumanized(options);
+    await this.persistCurrentSession(service);
+    await this.logActivity(sessionId, 'interaction', 'scroll-humanized', {
+      metadata: { humanized: true, options },
+    });
+  }
+
+  /**
+   * Simulate human reading behavior (random mouse movements and scrolling)
+   */
+  async simulateReading(sessionId: string, duration?: number): Promise<void> {
+    const service = this.getService(sessionId);
+    await service.simulateReading(duration);
+    await this.persistCurrentSession(service);
+    await this.logActivity(sessionId, 'interaction', 'simulate-reading', {
+      metadata: { duration },
+    });
+  }
+
+  /**
+   * Auto-detect and solve any CAPTCHA on current page
+   */
+  async solveCaptchaAuto(sessionId: string): Promise<{ type: string; solution: string } | null> {
+    const service = this.getService(sessionId);
+    const result = await service.solveAnyCaptcha();
+    await this.persistCurrentSession(service);
+    await this.logActivity(sessionId, 'interaction', 'captcha-solve-auto', {
+      metadata: { type: result?.type, success: !!result },
+      success: !!result,
+    });
+    return result;
+  }
+
+  /**
+   * Solve reCAPTCHA v2 on current page
+   */
+  async solveRecaptchaV2(sessionId: string): Promise<string | null> {
+    const service = this.getService(sessionId);
+    const solution = await service.solveRecaptchaV2();
+    await this.persistCurrentSession(service);
+    await this.logActivity(sessionId, 'interaction', 'captcha-solve-recaptcha-v2', {
+      metadata: { success: !!solution },
+      success: !!solution,
+    });
+    return solution;
+  }
+
+  /**
+   * Solve hCaptcha on current page
+   */
+  async solveHCaptcha(sessionId: string): Promise<string | null> {
+    const service = this.getService(sessionId);
+    const solution = await service.solveHCaptcha();
+    await this.persistCurrentSession(service);
+    await this.logActivity(sessionId, 'interaction', 'captcha-solve-hcaptcha', {
+      metadata: { success: !!solution },
+      success: !!solution,
+    });
+    return solution;
   }
 
   /**
@@ -630,4 +741,11 @@ export class BrowserHandler {
 export const browserHandler = new BrowserHandler({
   headless: false,
   slowMo: 100,
+  cookieConsent: {
+    autoReject: true,
+  },
+  navigation: {
+    waitUntil: 'domcontentloaded',
+    timeout: 45000,
+  },
 });
