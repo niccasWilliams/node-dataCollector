@@ -8,6 +8,7 @@ import browserRouter from "./routes/browser/browser.route";
 import { websiteRoutes } from "./routes/websites/website.route";
 import { productRoutes } from "./routes/products/product.route";
 import { productMatchingRouter } from "./routes/product-matching";
+import { scrapingQualityRoutes } from "./routes/scraping-quality";
 
 /**
  * Register individual app-specific routes
@@ -24,6 +25,9 @@ const registerIndividualRoutes = (app: express.Application) => {
 
   // Product matching and attributes routes
   app.use("/product-matching", productMatchingRouter);
+
+  // Scraping quality monitoring routes
+  app.use("/scraping-quality", scrapingQualityRoutes);
 
 };
 

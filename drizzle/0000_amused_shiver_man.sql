@@ -9,6 +9,8 @@ CREATE TYPE "public"."price_alert_type" AS ENUM('below_price', 'percentage_drop'
 CREATE TYPE "public"."product_attribute_type" AS ENUM('screen_size', 'storage', 'memory', 'color', 'resolution', 'processor', 'weight', 'dimensions', 'connectivity', 'custom');--> statement-breakpoint
 CREATE TYPE "public"."product_availability" AS ENUM('in_stock', 'out_of_stock', 'limited_stock', 'preorder', 'discontinued', 'unknown');--> statement-breakpoint
 CREATE TYPE "public"."product_match_status" AS ENUM('pending', 'accepted', 'rejected', 'auto_merged');--> statement-breakpoint
+CREATE TYPE "public"."scraping_quality_severity" AS ENUM('critical', 'warning', 'info');--> statement-breakpoint
+CREATE TYPE "public"."scraping_quality_status" AS ENUM('open', 'acknowledged', 'resolved', 'ignored');--> statement-breakpoint
 CREATE TYPE "public"."website_workflow_run_status" AS ENUM('pending', 'running', 'success', 'failed', 'timeout', 'cancelled');--> statement-breakpoint
 CREATE TYPE "public"."website_workflow_status" AS ENUM('active', 'paused', 'disabled', 'error');--> statement-breakpoint
 CREATE TYPE "public"."website_workflow_type" AS ENUM('price_check', 'data_extraction', 'form_fill', 'monitoring', 'scraping', 'testing', 'custom');--> statement-breakpoint
@@ -327,6 +329,34 @@ CREATE TABLE "products" (
 	"updated_at" timestamp DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 --> statement-breakpoint
+CREATE TABLE "scraping_quality_logs" (
+	"id" serial PRIMARY KEY NOT NULL,
+	"url" text NOT NULL,
+	"domain" text NOT NULL,
+	"adapter" text,
+	"product_id" integer,
+	"issue_fingerprint" text NOT NULL,
+	"missing_fields" jsonb DEFAULT '[]'::jsonb NOT NULL,
+	"field_errors" jsonb DEFAULT '{}'::jsonb NOT NULL,
+	"extracted_fields" jsonb DEFAULT '{}'::jsonb NOT NULL,
+	"validation_errors" jsonb DEFAULT '[]'::jsonb NOT NULL,
+	"severity" "scraping_quality_severity" NOT NULL,
+	"status" "scraping_quality_status" DEFAULT 'open' NOT NULL,
+	"first_seen_at" timestamp NOT NULL,
+	"last_seen_at" timestamp NOT NULL,
+	"occurrence_count" integer DEFAULT 1 NOT NULL,
+	"resolved_at" timestamp,
+	"resolved_by" integer,
+	"resolution" text,
+	"resolution_notes" text,
+	"screenshot" text,
+	"page_html_sample" text,
+	"metadata" jsonb DEFAULT '{}'::jsonb,
+	"created_at" timestamp DEFAULT CURRENT_TIMESTAMP NOT NULL,
+	"updated_at" timestamp DEFAULT CURRENT_TIMESTAMP NOT NULL,
+	CONSTRAINT "scraping_quality_dedup_unique" UNIQUE("domain","adapter","issue_fingerprint")
+);
+--> statement-breakpoint
 CREATE TABLE "website_elements" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"page_id" integer NOT NULL,
@@ -448,6 +478,8 @@ ALTER TABLE "product_sources" ADD CONSTRAINT "product_sources_website_page_id_we
 ALTER TABLE "product_variants" ADD CONSTRAINT "product_variants_merged_product_id_merged_products_id_fk" FOREIGN KEY ("merged_product_id") REFERENCES "public"."merged_products"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "product_variants" ADD CONSTRAINT "product_variants_primary_product_id_products_id_fk" FOREIGN KEY ("primary_product_id") REFERENCES "public"."products"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "products" ADD CONSTRAINT "products_merged_product_id_merged_products_id_fk" FOREIGN KEY ("merged_product_id") REFERENCES "public"."merged_products"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "scraping_quality_logs" ADD CONSTRAINT "scraping_quality_logs_product_id_products_id_fk" FOREIGN KEY ("product_id") REFERENCES "public"."products"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "scraping_quality_logs" ADD CONSTRAINT "scraping_quality_logs_resolved_by_users_id_fk" FOREIGN KEY ("resolved_by") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "website_elements" ADD CONSTRAINT "website_elements_page_id_website_pages_id_fk" FOREIGN KEY ("page_id") REFERENCES "public"."website_pages"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "website_pages" ADD CONSTRAINT "website_pages_website_id_websites_id_fk" FOREIGN KEY ("website_id") REFERENCES "public"."websites"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "website_workflow_runs" ADD CONSTRAINT "website_workflow_runs_workflow_id_website_workflows_id_fk" FOREIGN KEY ("workflow_id") REFERENCES "public"."website_workflows"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -520,6 +552,14 @@ CREATE INDEX "product_ean_idx" ON "products" USING btree ("ean");--> statement-b
 CREATE INDEX "product_asin_idx" ON "products" USING btree ("asin");--> statement-breakpoint
 CREATE INDEX "product_brand_model_idx" ON "products" USING btree ("brand","model");--> statement-breakpoint
 CREATE INDEX "product_name_idx" ON "products" USING btree ("name");--> statement-breakpoint
+CREATE INDEX "scraping_quality_url_idx" ON "scraping_quality_logs" USING btree ("url");--> statement-breakpoint
+CREATE INDEX "scraping_quality_domain_idx" ON "scraping_quality_logs" USING btree ("domain");--> statement-breakpoint
+CREATE INDEX "scraping_quality_adapter_idx" ON "scraping_quality_logs" USING btree ("adapter");--> statement-breakpoint
+CREATE INDEX "scraping_quality_severity_idx" ON "scraping_quality_logs" USING btree ("severity");--> statement-breakpoint
+CREATE INDEX "scraping_quality_status_idx" ON "scraping_quality_logs" USING btree ("status");--> statement-breakpoint
+CREATE INDEX "scraping_quality_product_idx" ON "scraping_quality_logs" USING btree ("product_id");--> statement-breakpoint
+CREATE INDEX "scraping_quality_first_seen_idx" ON "scraping_quality_logs" USING btree ("first_seen_at");--> statement-breakpoint
+CREATE INDEX "scraping_quality_last_seen_idx" ON "scraping_quality_logs" USING btree ("last_seen_at");--> statement-breakpoint
 CREATE INDEX "website_element_page_idx" ON "website_elements" USING btree ("page_id");--> statement-breakpoint
 CREATE INDEX "website_element_selector_idx" ON "website_elements" USING btree ("css_selector");--> statement-breakpoint
 CREATE INDEX "website_element_tag_idx" ON "website_elements" USING btree ("tag_name");--> statement-breakpoint

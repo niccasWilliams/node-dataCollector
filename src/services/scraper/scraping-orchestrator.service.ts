@@ -9,6 +9,7 @@ import * as websiteRepo from "@/routes/websites/website.repository";
 import type * as productRepo from "@/routes/products/product.repository";
 import { productMatchingService } from "@/services/matching/product-matching.service";
 import { attributeExtractorService } from "@/services/matching/attribute-extractor.service";
+import { scrapingQualityService } from "./scraping-quality.service";
 
 /**
  * Scraping Orchestrator
@@ -137,6 +138,15 @@ export class ScrapingOrchestrator {
       // Scrape the data
       const scrapedData = await priceScraperService.scrape(page as any, url, options?.customConfig);
 
+      // Determine adapter name for quality logging
+      let adapterName: string | undefined;
+      try {
+        const hostname = new URL(url).hostname;
+        if (hostname.includes("amazon")) adapterName = "Amazon";
+        else if (hostname.includes("mediamarkt")) adapterName = "MediaMarkt";
+      } catch {}
+
+
       // Validate scraped data
       const validation = priceScraperService.validateData(scrapedData);
       if (!validation.valid) {
@@ -144,8 +154,9 @@ export class ScrapingOrchestrator {
       }
 
       // Take screenshot for verification
+      const screenshotPath = `screenshots/products/${Date.now()}-${activeSessionId}.png`;
       await browserHandler.screenshot(activeSessionId, {
-        path: `screenshots/products/${Date.now()}-${activeSessionId}.png`,
+        path: screenshotPath,
       });
 
       // Store website snapshot
@@ -466,6 +477,21 @@ export class ScrapingOrchestrator {
       }
 
       // ==============================================================
+
+      // Log scraping quality for monitoring
+      try {
+        await scrapingQualityService.logScrapingResult({
+          url,
+          adapter: adapterName,
+          scrapedData,
+          validation,
+          productId: updatedProduct.id,
+          screenshotPath,
+        });
+      } catch (error) {
+        logger.error("Failed to log scraping quality:", error);
+        // Don't throw - quality logging shouldn't break scraping
+      }
 
       logger.info(`✅ Successfully scraped and saved product ${updatedProduct.id}`);
 

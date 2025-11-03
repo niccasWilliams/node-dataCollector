@@ -719,6 +719,81 @@ export const productMatchSuggestions = pgTable("product_match_suggestions", {
   productMergedUnique: unique("product_match_suggestion_product_merged_unique").on(table.productId, table.mergedProductId),
 }));
 
+// Scraping Quality Enums
+export const scrapingQualitySeverityEnum = pgEnum("scraping_quality_severity", [
+  "critical",  // Major fields missing (price, name, brand)
+  "warning",   // Minor fields missing (description, image)
+  "info",      // Everything OK, just logging
+]);
+
+export const scrapingQualityStatusEnum = pgEnum("scraping_quality_status", [
+  "open",          // Issue needs attention
+  "acknowledged",  // Team is aware
+  "resolved",      // Issue fixed
+  "ignored",       // Known limitation, won't fix
+]);
+
+/**
+ * Scraping Quality Logs Table - Monitor Scraping Health
+ * Tracks which fields couldn't be extracted and detects website changes
+ * Deduplicated by URL + adapter + issue fingerprint
+ */
+export const scrapingQualityLogs = pgTable("scraping_quality_logs", {
+  id: serial("id").primaryKey(),
+
+  // What was scraped
+  url: text("url").notNull(),
+  domain: text("domain").notNull(), // Extracted domain for grouping
+  adapter: text("adapter"), // "Amazon", "MediaMarkt", null = generic
+  productId: integer("product_id").references(() => products.id, { onDelete: "set null" }),
+
+  // Issue fingerprint (for deduplication)
+  // Format: "missing_fields:brand,ean|adapter:Amazon"
+  issueFingerprint: text("issue_fingerprint").notNull(),
+
+  // Quality metrics
+  missingFields: jsonb("missing_fields").notNull().default([]), // ["brand", "ean"]
+  fieldErrors: jsonb("field_errors").notNull().default({}), // { "price": "Selector not found", "brand": "Empty result" }
+  extractedFields: jsonb("extracted_fields").notNull().default({}), // What we DID extract successfully
+
+  // Validation results
+  validationErrors: jsonb("validation_errors").notNull().default([]), // Errors from validateData()
+
+  // Severity (auto-calculated based on missing fields)
+  severity: scrapingQualitySeverityEnum("severity").notNull(),
+  status: scrapingQualityStatusEnum("status").notNull().default("open"),
+
+  // Tracking - deduplication
+  firstSeenAt: timestamp("first_seen_at").notNull(),
+  lastSeenAt: timestamp("last_seen_at").notNull(),
+  occurrenceCount: integer("occurrence_count").notNull().default(1),
+
+  // Resolution
+  resolvedAt: timestamp("resolved_at"),
+  resolvedBy: integer("resolved_by").references(() => users.id, { onDelete: "set null" }),
+  resolution: text("resolution"),
+  resolutionNotes: text("resolution_notes"),
+
+  // Debug context (optional, can be large)
+  screenshot: text("screenshot"), // Path to screenshot
+  pageHtmlSample: text("page_html_sample"), // First 10KB of HTML for debugging
+
+  metadata: jsonb("metadata").default({}),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => ({
+  urlIdx: index("scraping_quality_url_idx").on(table.url),
+  domainIdx: index("scraping_quality_domain_idx").on(table.domain),
+  adapterIdx: index("scraping_quality_adapter_idx").on(table.adapter),
+  severityIdx: index("scraping_quality_severity_idx").on(table.severity),
+  statusIdx: index("scraping_quality_status_idx").on(table.status),
+  productIdx: index("scraping_quality_product_idx").on(table.productId),
+  firstSeenIdx: index("scraping_quality_first_seen_idx").on(table.firstSeenAt),
+  lastSeenIdx: index("scraping_quality_last_seen_idx").on(table.lastSeenAt),
+  // Unique constraint for deduplication
+  domainAdapterFingerprintUnique: unique("scraping_quality_dedup_unique").on(table.domain, table.adapter, table.issueFingerprint),
+}));
+
 // ============================================================================
 // TYPES - Export types for use in app and frontend
 // ============================================================================
@@ -763,3 +838,9 @@ export type ProductMatchStatus = typeof productMatchStatusEnum.enumValues[number
 
 export type ProductMatchSuggestion = typeof productMatchSuggestions.$inferSelect;
 export type ProductMatchSuggestionInsert = typeof productMatchSuggestions.$inferInsert;
+
+export type ScrapingQualityLog = typeof scrapingQualityLogs.$inferSelect;
+export type ScrapingQualityLogInsert = typeof scrapingQualityLogs.$inferInsert;
+export type ScrapingQualityLogId = typeof scrapingQualityLogs.$inferSelect["id"];
+export type ScrapingQualitySeverity = typeof scrapingQualitySeverityEnum.enumValues[number];
+export type ScrapingQualityStatus = typeof scrapingQualityStatusEnum.enumValues[number];
