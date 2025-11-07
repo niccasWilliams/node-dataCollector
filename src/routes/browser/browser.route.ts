@@ -20,7 +20,36 @@ router.get('/', (_req, res) => {
  * /browser/session:
  *   post:
  *     summary: Neue Browser-Session starten
- *     description: Öffnet/registriert eine neue Chrome-Automation-Session.
+ *     description: |
+ *       Öffnet eine neue Chrome-Automation-Session mit **MAXIMUM STEALTH** by default!
+ *
+ *       **Automatische Features (immer aktiv):**
+ *       - 🔒 **Stealth Mode** - Chromium mit Extensions, WebRTC-Schutz, Fingerprinting-Schutz
+ *       - 🤖 **Humanized Timing** - 100ms slowMo, natürliche Interaktionen
+ *       - 👁️ **Visible Mode** - Browser ist sichtbar (authentischer!)
+ *       - 🍪 **Cookie Auto-Reject** - Cookies automatisch ablehnen
+ *       - 🚨 **Bot-Detection Monitoring** - Warnt bei CAPTCHA, Blocks, etc.
+ *
+ *       **Du musst NUR konfigurieren:**
+ *       - `persistProfile` - Um angemeldet zu bleiben (optional)
+ *       - `onBotDetected` - Um Session bei Bot-Detection zu stoppen (optional)
+ *
+ *       **Beispiele:**
+ *       ```json
+ *       // Einfachste Session (temporär)
+ *       {}
+ *
+ *       // Mit persistent profile (bleibt eingeloggt!)
+ *       { "config": { "persistProfile": "onlogist" } }
+ *
+ *       // Session stoppt bei Bot-Detection
+ *       {
+ *         "config": {
+ *           "persistProfile": "onlogist",
+ *           "onBotDetected": "stop"
+ *         }
+ *       }
+ *       ```
  *     tags:
  *       - Browser Automation
  *     requestBody:
@@ -32,7 +61,56 @@ router.get('/', (_req, res) => {
  *             properties:
  *               config:
  *                 type: object
- *                 description: Optionale Launch-/Session-Konfiguration für den Browser.
+ *                 description: Browser-Konfiguration (meist leer, Defaults sind optimal!)
+ *                 properties:
+ *                   persistProfile:
+ *                     oneOf:
+ *                       - type: boolean
+ *                       - type: string
+ *                     description: |
+ *                       🔐 **Persistent Browser-Profil** (bleibt angemeldet!)
+ *                       - `"profile-name"`: Verwendet spezifisches Profil (empfohlen!)
+ *                       - `true`: Auto-erstellt Profil basierend auf URL
+ *                       - `false`/`undefined`: Temporäre Session (default)
+ *
+ *                       **Wichtig:** Profile speichern:
+ *                       - Cookies & Sessions (bleibst angemeldet!)
+ *                       - LocalStorage
+ *                       - **Konsistenten Browser-Fingerprint** (wichtig gegen Logout!)
+ *
+ *                       **Beispiel:**
+ *                       ```json
+ *                       { "persistProfile": "onlogist" }
+ *                       ```
+ *                     example: "onlogist"
+ *                   botDetection:
+ *                     type: boolean
+ *                     description: |
+ *                       🚨 Automatische Bot-Detection-Erkennung
+ *                       - `true` (default): Prüft bei jeder Navigation
+ *                       - `false`: Deaktiviert (nicht empfohlen!)
+ *                     default: true
+ *                   onBotDetected:
+ *                     type: string
+ *                     enum: [warn, stop, ignore]
+ *                     description: |
+ *                       Aktion bei Bot-Detection:
+ *                       - `warn` (default): Warnung loggen, weitermachen
+ *                       - `stop`: Session **sofort schließen** (sicherer!)
+ *                       - `ignore`: Nicht prüfen (NICHT empfohlen!)
+ *                     default: "warn"
+ *                   headless:
+ *                     type: boolean
+ *                     description: |
+ *                       ⚠️ **@internal** - Headless-Modus (Standard: `false` = visible)
+ *                       Visible ist authentischer! Nur für Debugging ändern.
+ *                     default: false
+ *                   slowMo:
+ *                     type: number
+ *                     description: |
+ *                       ⚠️ **@internal** - Verlangsamung in ms (Standard: `100`)
+ *                       Humanized timing! Nur für Debugging ändern.
+ *                     default: 100
  *     responses:
  *       200:
  *         description: Session erstellt
@@ -45,6 +123,22 @@ router.get('/', (_req, res) => {
  *                   type: boolean
  *                 data:
  *                   type: object
+ *                   properties:
+ *                     id:
+ *                       type: string
+ *                       description: Session-ID
+ *                     status:
+ *                       type: string
+ *                       enum: [idle, active, navigating, closed]
+ *                     currentUrl:
+ *                       type: string
+ *                       nullable: true
+ *                     title:
+ *                       type: string
+ *                       nullable: true
+ *                     createdAt:
+ *                       type: string
+ *                       format: date-time
  */
 router.post('/session', browserController.createSession);
 
@@ -1053,5 +1147,199 @@ router.post('/session/:sessionId/solve-recaptcha-v2', browserController.solveRec
  *         description: Fehler beim Lösen
  */
 router.post('/session/:sessionId/solve-hcaptcha', browserController.solveHCaptcha);
+
+/**
+ * @openapi
+ * tags:
+ *   - name: Safety Features
+ *     description: Neue Sicherheits-Features - Bot-Detection-Detection und Persistent Browser Profiles
+ */
+
+/**
+ * @openapi
+ * /browser/session/{sessionId}/check-bot-detection:
+ *   post:
+ *     summary: Prüfe Seite auf Bot-Detection-Indikatoren
+ *     description: |
+ *       Prüft die aktuelle Seite auf Anzeichen von Bot-Detection:
+ *       - CAPTCHA (reCAPTCHA, hCaptcha, CloudFlare Turnstile)
+ *       - "Access Denied" / "Blocked" Seiten
+ *       - CloudFlare/Akamai Challenges
+ *       - Rate-Limiting-Warnungen
+ *       - Verdächtige Redirects
+ *       - Anti-Bot-JavaScript (PerimeterX, DataDome, etc.)
+ *
+ *       **Wird automatisch bei jeder Navigation geprüft** (wenn `botDetection: true`)
+ *     tags:
+ *       - Safety Features
+ *     parameters:
+ *       - in: path
+ *         name: sessionId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Bot-Detection-Status
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     detected:
+ *                       type: boolean
+ *                       description: Wurde Bot-Detection erkannt?
+ *                     confidence:
+ *                       type: number
+ *                       description: Confidence-Score (0-100%)
+ *                       example: 75
+ *                     indicators:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           type:
+ *                             type: string
+ *                             enum: [captcha, blocked, challenge, rate-limit, redirect, suspicious-js]
+ *                           severity:
+ *                             type: string
+ *                             enum: [low, medium, high, critical]
+ *                           evidence:
+ *                             type: string
+ *                           selector:
+ *                             type: string
+ *                             nullable: true
+ *                     timestamp:
+ *                       type: string
+ *                       format: date-time
+ *                     url:
+ *                       type: string
+ *       500:
+ *         description: Fehler beim Prüfen
+ */
+router.post('/session/:sessionId/check-bot-detection', browserController.checkBotDetection);
+
+/**
+ * @openapi
+ * /browser/profiles:
+ *   get:
+ *     summary: Alle Browser-Profile abrufen
+ *     description: |
+ *       Listet alle persistenten Browser-Profile auf.
+ *       Profile enthalten Cookies, LocalStorage, etc. und bleiben über Sessions hinweg erhalten.
+ *     tags:
+ *       - Safety Features
+ *     responses:
+ *       200:
+ *         description: Liste der Profile
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       name:
+ *                         type: string
+ *                         example: "onlogist"
+ *                       path:
+ *                         type: string
+ *                         example: "/Users/.../.node-datacollector/browser-profiles/onlogist"
+ *                       website:
+ *                         type: string
+ *                         nullable: true
+ *                         example: "onlogist.com"
+ *                       createdAt:
+ *                         type: string
+ *                         format: date-time
+ *                       lastUsedAt:
+ *                         type: string
+ *                         format: date-time
+ */
+router.get('/profiles', browserController.getProfiles);
+
+/**
+ * @openapi
+ * /browser/profiles/{profileName}:
+ *   delete:
+ *     summary: Browser-Profil löschen
+ *     description: |
+ *       Löscht ein persistentes Browser-Profil dauerhaft.
+ *       **ACHTUNG:** Alle Cookies, LocalStorage, etc. gehen verloren!
+ *       Du musst dich neu einloggen, wenn du dieses Profil wieder verwendest.
+ *     tags:
+ *       - Safety Features
+ *     parameters:
+ *       - in: path
+ *         name: profileName
+ *         required: true
+ *         schema:
+ *           type: string
+ *         example: "old-profile"
+ *     responses:
+ *       200:
+ *         description: Profil gelöscht
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 message:
+ *                   type: string
+ *       404:
+ *         description: Profil nicht gefunden
+ */
+router.delete('/profiles/:profileName', browserController.deleteProfile);
+
+/**
+ * @openapi
+ * /browser/profiles/cleanup:
+ *   post:
+ *     summary: Alte Profile aufräumen
+ *     description: Löscht Profile, die länger als X Tage nicht verwendet wurden.
+ *     tags:
+ *       - Safety Features
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               daysOld:
+ *                 type: integer
+ *                 description: Alter in Tagen (Standard 30)
+ *                 default: 30
+ *                 example: 30
+ *     responses:
+ *       200:
+ *         description: Aufräumen abgeschlossen
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     deleted:
+ *                       type: integer
+ *                       description: Anzahl gelöschter Profile
+ */
+router.post('/profiles/cleanup', browserController.cleanupProfiles);
 
 export default router;

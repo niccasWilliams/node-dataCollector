@@ -84,21 +84,68 @@ export class AmazonAdapter implements ShopAdapter {
     try {
       // Look in product details table
       const ean = await page.evaluate(() => {
-        const rows = Array.from(document.querySelectorAll("tr.a-spacing-small, .prodDetTable tr"));
+        // Try product details table first
+        const rows = Array.from(document.querySelectorAll("tr.a-spacing-small, .prodDetTable tr, #productDetails_detailBullets_sections1 tr, #detailBullets_feature_div li"));
         for (const row of rows) {
-          const label = row.querySelector("th, .label")?.textContent?.toLowerCase() || "";
-          if (label.includes("ean") || label.includes("gtin")) {
-            const value = row.querySelector("td, .value")?.textContent?.trim();
+          const text = row.textContent?.toLowerCase() || "";
+          const label = row.querySelector("th, .label, .a-text-bold")?.textContent?.toLowerCase() || "";
+
+          if (label.includes("ean") || label.includes("gtin") || text.includes("ean") || text.includes("gtin")) {
+            // Try to find 13-digit number
+            const match = text.match(/\b(\d{13})\b/);
+            if (match) {
+              return match[1];
+            }
+
+            // Also try value cell specifically
+            const value = row.querySelector("td, .value, span:not(.a-text-bold)")?.textContent?.trim();
             if (value && /^\d{13}$/.test(value)) {
               return value;
             }
           }
         }
+
+        // Try structured data (JSON-LD)
+        const scripts = Array.from(document.querySelectorAll('script[type="application/ld+json"]'));
+        for (const script of scripts) {
+          try {
+            const data = JSON.parse(script.textContent || "");
+            if (data.gtin13) return data.gtin13;
+            if (data.gtin) return data.gtin;
+            if (data.ean) return data.ean;
+          } catch {}
+        }
+
+        // Try product information section (sometimes in divs)
+        const allDivs = Array.from(document.querySelectorAll('[id*="detail"], [class*="detail"], [id*="product"], [class*="product"]'));
+        for (const div of allDivs) {
+          const text = div.textContent?.toLowerCase() || "";
+          if ((text.includes("ean") || text.includes("gtin")) && text.length < 500) { // Avoid huge sections
+            const match = text.match(/\b(\d{13})\b/);
+            if (match) {
+              return match[1];
+            }
+          }
+        }
+
+        // Try meta tags
+        const eanMeta = document.querySelector<HTMLMetaElement>('meta[property="product:ean"], meta[name="ean"]');
+        if (eanMeta?.content && /^\d{13}$/.test(eanMeta.content)) {
+          return eanMeta.content;
+        }
+
         return null;
       });
 
+      if (ean) {
+        logger.debug(`[AmazonAdapter] EAN extracted: ${ean}`);
+      } else {
+        logger.debug('[AmazonAdapter] No EAN found');
+      }
+
       return ean;
     } catch (error) {
+      logger.error('[AmazonAdapter] EAN extraction error:', error);
       return null;
     }
   }

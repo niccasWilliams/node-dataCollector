@@ -173,30 +173,6 @@ export const browserExtractedData = pgTable("browser_extracted_data", {
 
 
 
-// ============================================================================
-// TYPES - Export types for use in app and frontend
-// ============================================================================
-
-export type BrowserSession = typeof browserSessions.$inferSelect;
-export type BrowserSessionInsert = typeof browserSessions.$inferInsert;
-export type BrowserSessionId = typeof browserSessions.$inferSelect["id"];
-export type BrowserSessionStatus = typeof browserSessionStatusEnum.enumValues[number];
-
-export type BrowserActivity = typeof browserActivities.$inferSelect;
-export type BrowserActivityInsert = typeof browserActivities.$inferInsert;
-export type BrowserActivityId = typeof browserActivities.$inferSelect["id"];
-export type BrowserActivityType = typeof browserActivityTypeEnum.enumValues[number];
-
-export type BrowserScreenshot = typeof browserScreenshots.$inferSelect;
-export type BrowserScreenshotInsert = typeof browserScreenshots.$inferInsert;
-export type BrowserScreenshotId = typeof browserScreenshots.$inferSelect["id"];
-
-export type BrowserExtractedData = typeof browserExtractedData.$inferSelect;
-export type BrowserExtractedDataInsert = typeof browserExtractedData.$inferInsert;
-export type BrowserExtractedDataId = typeof browserExtractedData.$inferSelect["id"];
-
-
-
 // WEBSITE INVENTORY & AUTOMATION ############################################################################################################
 
 /**
@@ -215,6 +191,50 @@ export const websites = pgTable("websites", {
 }, (table) => ({
   domainIdx: index("website_domain_idx").on(table.domain),
   isActiveIdx: index("website_is_active_idx").on(table.isActive),
+}));
+
+/**
+ * Website Credentials Table - Login Credentials for Websites
+ * Stores authentication credentials for websites that require login
+ * Examples: Onlogist, Amazon Seller Central, Tracking portals, etc.
+ */
+export const websiteCredentials = pgTable("website_credentials", {
+  id: serial("id").primaryKey(),
+  websiteId: integer("website_id").notNull().references(() => websites.id, { onDelete: "cascade" }),
+
+  // Credential Information
+  username: text("username"), // Username or email
+  password: text("password"), // Encrypted password (use encryption at app level!)
+
+  // Optional: Additional auth fields
+  totpSecret: text("totp_secret"), // For 2FA if needed
+
+  // Session Persistence (optional)
+  sessionData: jsonb("session_data").default({}), // Store cookies, tokens, etc. for session reuse
+  sessionExpiresAt: timestamp("session_expires_at"), // When session expires
+
+  // Credential Metadata
+  label: text("label"), // e.g., "Main Account", "Test Account"
+  description: text("description"),
+
+  // Status
+  isActive: boolean("is_active").notNull().default(true),
+  lastUsedAt: timestamp("last_used_at"), // Last time credentials were used
+  lastValidatedAt: timestamp("last_validated_at"), // Last time login was verified successful
+
+  // Error Tracking
+  failedLoginAttempts: integer("failed_login_attempts").notNull().default(0),
+  lastFailedAt: timestamp("last_failed_at"),
+  lastError: text("last_error"), // Last error message
+
+  metadata: jsonb("metadata").default({}),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => ({
+  websiteIdx: index("website_credential_website_idx").on(table.websiteId),
+  isActiveIdx: index("website_credential_active_idx").on(table.isActive),
+  usernameIdx: index("website_credential_username_idx").on(table.username),
+  lastUsedIdx: index("website_credential_last_used_idx").on(table.lastUsedAt),
 }));
 
 /**
@@ -348,35 +368,32 @@ export const websiteWorkflowRuns = pgTable("website_workflow_runs", {
   sessionIdx: index("website_workflow_run_session_idx").on(table.browserSessionId),
 }));
 
-// ============================================================================
-// TYPES - Export types for use in app and frontend
-// ============================================================================
-
-export type Website = typeof websites.$inferSelect;
-export type WebsiteInsert = typeof websites.$inferInsert;
-export type WebsiteId = typeof websites.$inferSelect["id"];
-
-export type WebsitePage = typeof websitePages.$inferSelect;
-export type WebsitePageInsert = typeof websitePages.$inferInsert;
-export type WebsitePageId = typeof websitePages.$inferSelect["id"];
-
-export type WebsiteElement = typeof websiteElements.$inferSelect;
-export type WebsiteElementInsert = typeof websiteElements.$inferInsert;
-export type WebsiteElementId = typeof websiteElements.$inferSelect["id"];
-
-export type WebsiteWorkflow = typeof websiteWorkflows.$inferSelect;
-export type WebsiteWorkflowInsert = typeof websiteWorkflows.$inferInsert;
-export type WebsiteWorkflowId = typeof websiteWorkflows.$inferSelect["id"];
-export type WebsiteWorkflowType = typeof websiteWorkflowTypeEnum.enumValues[number];
-export type WebsiteWorkflowStatus = typeof websiteWorkflowStatusEnum.enumValues[number];
-
-export type WebsiteWorkflowRun = typeof websiteWorkflowRuns.$inferSelect;
-export type WebsiteWorkflowRunInsert = typeof websiteWorkflowRuns.$inferInsert;
-export type WebsiteWorkflowRunId = typeof websiteWorkflowRuns.$inferSelect["id"];
-export type WebsiteWorkflowRunStatus = typeof websiteWorkflowRunStatusEnum.enumValues[number];
 
 
-// PRODUCT & PRICE TRACKING ############################################################################################################
+// BROWSER PROFILES ############################################################################################################
+export const browserProfiles = pgTable("browser_profiles", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull().unique(), // "onlogist", "amazon", etc.
+  website: text("website"), // "onlogist.com" (optional)
+  fingerprintSeed: integer("fingerprint_seed").notNull(), // For consistent fingerprinting
+  userDataPath: text("user_data_path").notNull(), // Path to Chromium user data directory
+
+  // Optional: Link to user if needed (e.g., multi-tenant)
+  userId: integer("user_id").references(() => users.id, { onDelete: "cascade" }),
+
+  // Metadata
+  description: text("description"), // Optional: "Profile for Onlogist automation"
+  createdAt: timestamp("created_at").notNull(),
+  lastUsedAt: timestamp("last_used_at").notNull(),
+  updatedAt: timestamp("updated_at").notNull(),
+}, (table) => ({
+  nameIdx: index("browser_profile_name_idx").on(table.name),
+  websiteIdx: index("browser_profile_website_idx").on(table.website),
+  userIdx: index("browser_profile_user_idx").on(table.userId),
+  lastUsedIdx: index("browser_profile_last_used_idx").on(table.lastUsedAt),
+}));
+
+
 
 /**
  * Merged Products Table - Master Product Database
@@ -519,44 +536,11 @@ export const productSources = pgTable("product_sources", {
 }));
 
 /**
- * Product Prices Table - Current Prices
- * Stores the most recent price for each product source AND variant combination
- * This allows tracking prices for different variants (e.g., 55" vs 65") from different shops
+ * NOTE: productPrices table has been removed!
+ * All price data is now stored ONLY in priceHistory table.
+ * Each scrape creates a NEW history entry (no updates).
+ * To get current price: query priceHistory ordered by recordedAt DESC limit 1
  */
-export const productPrices = pgTable("product_prices", {
-  id: serial("id").primaryKey(),
-  variantId: integer("variant_id").notNull().references(() => productVariants.id, { onDelete: "cascade" }),
-  productSourceId: integer("product_source_id").notNull().references(() => productSources.id, { onDelete: "cascade" }),
-
-  // Price Information
-  price: numeric("price", { precision: 10, scale: 2 }).notNull(),
-  currency: text("currency").notNull().default("EUR"),
-  originalPrice: numeric("original_price", { precision: 10, scale: 2 }), // Crossed-out price
-  discountPercentage: numeric("discount_percentage", { precision: 5, scale: 2 }),
-
-  // Availability
-  availability: productAvailabilityEnum("availability").notNull().default("unknown"),
-  stockQuantity: integer("stock_quantity"), // If available
-
-  // Shipping & Extras
-  shippingCost: numeric("shipping_cost", { precision: 10, scale: 2 }),
-
-  // Price Confidence
-  isPriceError: boolean("is_price_error").notNull().default(false), // Flagged as suspicious
-  confidence: numeric("confidence", { precision: 3, scale: 2 }).notNull().default("1.00"), // 0-1 confidence score
-
-  metadata: jsonb("metadata").default({}),
-  scrapedAt: timestamp("scraped_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-}, (table) => ({
-  variantIdx: index("product_price_variant_idx").on(table.variantId),
-  productSourceIdx: index("product_price_source_idx").on(table.productSourceId),
-  variantSourceUnique: unique("product_price_variant_source_unique").on(table.variantId, table.productSourceId), // One price per variant+source combination
-  priceIdx: index("product_price_price_idx").on(table.price),
-  availabilityIdx: index("product_price_availability_idx").on(table.availability),
-  isPriceErrorIdx: index("product_price_error_idx").on(table.isPriceError),
-  scrapedAtIdx: index("product_price_scraped_idx").on(table.scrapedAt),
-}));
 
 /**
  * Price History Table - Historical Price Tracking
@@ -585,6 +569,7 @@ export const priceHistory = pgTable("price_history", {
 
   metadata: jsonb("metadata").default({}),
   recordedAt: timestamp("recorded_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => ({
   variantIdx: index("price_history_variant_idx").on(table.variantId),
   productSourceIdx: index("price_history_source_idx").on(table.productSourceId),
@@ -814,9 +799,7 @@ export type ProductSource = typeof productSources.$inferSelect;
 export type ProductSourceInsert = typeof productSources.$inferInsert;
 export type ProductSourceId = typeof productSources.$inferSelect["id"];
 
-export type ProductPrice = typeof productPrices.$inferSelect;
-export type ProductPriceInsert = typeof productPrices.$inferInsert;
-export type ProductPriceId = typeof productPrices.$inferSelect["id"];
+// ProductPrice types removed - use PriceHistory instead!
 export type ProductAvailability = typeof productAvailabilityEnum.enumValues[number];
 
 export type PriceHistory = typeof priceHistory.$inferSelect;
@@ -844,3 +827,52 @@ export type ScrapingQualityLogInsert = typeof scrapingQualityLogs.$inferInsert;
 export type ScrapingQualityLogId = typeof scrapingQualityLogs.$inferSelect["id"];
 export type ScrapingQualitySeverity = typeof scrapingQualitySeverityEnum.enumValues[number];
 export type ScrapingQualityStatus = typeof scrapingQualityStatusEnum.enumValues[number];
+
+export type Website = typeof websites.$inferSelect;
+export type WebsiteInsert = typeof websites.$inferInsert;
+export type WebsiteId = typeof websites.$inferSelect["id"];
+
+export type WebsiteCredential = typeof websiteCredentials.$inferSelect;
+export type WebsiteCredentialInsert = typeof websiteCredentials.$inferInsert;
+export type WebsiteCredentialId = typeof websiteCredentials.$inferSelect["id"];
+
+export type WebsitePage = typeof websitePages.$inferSelect;
+export type WebsitePageInsert = typeof websitePages.$inferInsert;
+export type WebsitePageId = typeof websitePages.$inferSelect["id"];
+
+export type WebsiteElement = typeof websiteElements.$inferSelect;
+export type WebsiteElementInsert = typeof websiteElements.$inferInsert;
+export type WebsiteElementId = typeof websiteElements.$inferSelect["id"];
+
+export type WebsiteWorkflow = typeof websiteWorkflows.$inferSelect;
+export type WebsiteWorkflowInsert = typeof websiteWorkflows.$inferInsert;
+export type WebsiteWorkflowId = typeof websiteWorkflows.$inferSelect["id"];
+export type WebsiteWorkflowType = typeof websiteWorkflowTypeEnum.enumValues[number];
+export type WebsiteWorkflowStatus = typeof websiteWorkflowStatusEnum.enumValues[number];
+
+export type WebsiteWorkflowRun = typeof websiteWorkflowRuns.$inferSelect;
+export type WebsiteWorkflowRunInsert = typeof websiteWorkflowRuns.$inferInsert;
+export type WebsiteWorkflowRunId = typeof websiteWorkflowRuns.$inferSelect["id"];
+export type WebsiteWorkflowRunStatus = typeof websiteWorkflowRunStatusEnum.enumValues[number];
+
+
+export type BrowserProfile = typeof browserProfiles.$inferSelect;
+export type BrowserProfileInsert = typeof browserProfiles.$inferInsert;
+export type BrowserProfileId = typeof browserProfiles.$inferSelect["id"];
+export type BrowserSession = typeof browserSessions.$inferSelect;
+export type BrowserSessionInsert = typeof browserSessions.$inferInsert;
+export type BrowserSessionId = typeof browserSessions.$inferSelect["id"];
+export type BrowserSessionStatus = typeof browserSessionStatusEnum.enumValues[number];
+
+export type BrowserActivity = typeof browserActivities.$inferSelect;
+export type BrowserActivityInsert = typeof browserActivities.$inferInsert;
+export type BrowserActivityId = typeof browserActivities.$inferSelect["id"];
+export type BrowserActivityType = typeof browserActivityTypeEnum.enumValues[number];
+
+export type BrowserScreenshot = typeof browserScreenshots.$inferSelect;
+export type BrowserScreenshotInsert = typeof browserScreenshots.$inferInsert;
+export type BrowserScreenshotId = typeof browserScreenshots.$inferSelect["id"];
+
+export type BrowserExtractedData = typeof browserExtractedData.$inferSelect;
+export type BrowserExtractedDataInsert = typeof browserExtractedData.$inferInsert;
+export type BrowserExtractedDataId = typeof browserExtractedData.$inferSelect["id"];

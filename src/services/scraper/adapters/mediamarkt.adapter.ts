@@ -46,6 +46,9 @@ export class MediaMarktAdapter implements ShopAdapter {
         availability: this.extractAvailability.bind(this),
         price: this.extractPrice.bind(this),
         brand: this.extractBrand.bind(this),
+        imageUrl: this.extractImageUrl.bind(this),
+        description: this.extractDescription.bind(this),
+        originalPrice: this.extractOriginalPrice.bind(this),
       },
     };
   }
@@ -611,6 +614,228 @@ export class MediaMarktAdapter implements ShopAdapter {
       }
 
       return null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  /**
+   * Extract image URL from MediaMarkt product page
+   */
+  private async extractImageUrl(page: Page): Promise<string | null> {
+    try {
+      const imageUrl = await page.evaluate(() => {
+        // Initialize __name helper (required by custom browser setup)
+        if (typeof window !== "undefined" && typeof (window as any).__name !== "function") {
+          (window as any).__name = function (target: any, value: string) {
+            try {
+              Object.defineProperty(target, "name", { value, configurable: true });
+            } catch {
+              // ignore
+            }
+            return target;
+          };
+        }
+        if (typeof __name !== "function" && typeof window !== "undefined" && typeof (window as any).__name === "function") {
+          var __name = (window as any).__name;
+        }
+
+        // Try multiple image selectors
+        const selectors = [
+          '[data-test="mms-gallery-main-image"] img',
+          '[data-test="mms-product-image"] img',
+          '.product-image img',
+          '.gallery-image img',
+          '[class*="ProductImage"] img',
+          '[class*="Gallery"] img[src*="mediamarkt"]',
+          'img[itemprop="image"]',
+        ];
+
+        for (const selector of selectors) {
+          const img = document.querySelector<HTMLImageElement>(selector);
+          if (img?.src && img.src.startsWith('http')) {
+            // Prefer larger images if available
+            const srcset = img.getAttribute('srcset');
+            if (srcset) {
+              const urls = srcset.split(',').map(s => s.trim().split(' ')[0]);
+              // Return the last (usually largest) image
+              if (urls.length > 0) {
+                return urls[urls.length - 1];
+              }
+            }
+            return img.src;
+          }
+        }
+
+        // Try structured data
+        const scripts = Array.from(document.querySelectorAll('script[type="application/ld+json"]'));
+        for (const script of scripts) {
+          try {
+            const data = JSON.parse(script.textContent || "");
+            if (data.image) {
+              if (typeof data.image === 'string') return data.image;
+              if (Array.isArray(data.image) && data.image.length > 0) return data.image[0];
+              if (data.image.url) return data.image.url;
+            }
+          } catch {}
+        }
+
+        // Try Open Graph image
+        const ogImage = document.querySelector<HTMLMetaElement>('meta[property="og:image"]');
+        if (ogImage?.content) return ogImage.content;
+
+        return null;
+      });
+
+      return imageUrl;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  /**
+   * Extract description from MediaMarkt product page
+   */
+  private async extractDescription(page: Page): Promise<string | null> {
+    try {
+      const description = await page.evaluate(() => {
+        // Initialize __name helper (required by custom browser setup)
+        if (typeof window !== "undefined" && typeof (window as any).__name !== "function") {
+          (window as any).__name = function (target: any, value: string) {
+            try {
+              Object.defineProperty(target, "name", { value, configurable: true });
+            } catch {
+              // ignore
+            }
+            return target;
+          };
+        }
+        if (typeof __name !== "function" && typeof window !== "undefined" && typeof (window as any).__name === "function") {
+          var __name = (window as any).__name;
+        }
+
+        // Try multiple description selectors
+        const selectors = [
+          '[data-test="mms-product-description"]',
+          '.product-description',
+          '[class*="ProductDescription"]',
+          '[data-test*="description"]',
+          '[itemprop="description"]',
+        ];
+
+        for (const selector of selectors) {
+          const element = document.querySelector(selector);
+          if (element?.textContent) {
+            const text = element.textContent.trim();
+            if (text.length > 20) { // Ensure it's a meaningful description
+              return text;
+            }
+          }
+        }
+
+        // Try structured data
+        const scripts = Array.from(document.querySelectorAll('script[type="application/ld+json"]'));
+        for (const script of scripts) {
+          try {
+            const data = JSON.parse(script.textContent || "");
+            if (data.description && typeof data.description === 'string' && data.description.length > 20) {
+              return data.description;
+            }
+          } catch {}
+        }
+
+        // Try meta description
+        const metaDesc = document.querySelector<HTMLMetaElement>('meta[name="description"]');
+        if (metaDesc?.content && metaDesc.content.length > 20) {
+          return metaDesc.content;
+        }
+
+        return null;
+      });
+
+      return description;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  /**
+   * Extract original price (crossed-out price) from MediaMarkt product page
+   */
+  private async extractOriginalPrice(page: Page): Promise<number | null> {
+    try {
+      const originalPriceString = await page.evaluate(() => {
+        // Initialize __name helper (required by custom browser setup)
+        if (typeof window !== "undefined" && typeof (window as any).__name !== "function") {
+          (window as any).__name = function (target: any, value: string) {
+            try {
+              Object.defineProperty(target, "name", { value, configurable: true });
+            } catch {
+              // ignore
+            }
+            return target;
+          };
+        }
+        if (typeof __name !== "function" && typeof window !== "undefined" && typeof (window as any).__name === "function") {
+          var __name = (window as any).__name;
+        }
+
+        // Try multiple original price selectors
+        const selectors = [
+          '[data-test="mms-crossed-price"]',
+          '.strikethrough-price',
+          '.original-price',
+          '[data-test*="original-price"]',
+          '[class*="CrossedPrice"]',
+          '[class*="OriginalPrice"]',
+          'span[style*="text-decoration: line-through"]',
+          'span[style*="text-decoration:line-through"]',
+        ];
+
+        for (const selector of selectors) {
+          const element = document.querySelector(selector);
+          if (element?.textContent) {
+            const text = element.textContent.trim();
+            // Check if it looks like a price
+            if (/\d+[,.]?\d*\s*€?/.test(text)) {
+              return text;
+            }
+          }
+        }
+
+        // Try to find any struck-through price elements
+        const allElements = Array.from(document.querySelectorAll('*'));
+        for (const element of allElements) {
+          const htmlEl = element as HTMLElement;
+          const style = window.getComputedStyle(htmlEl);
+          if (style.textDecoration.includes('line-through')) {
+            const text = htmlEl.textContent?.trim() || '';
+            if (/\d+[,.]?\d*\s*€/.test(text) && text.length < 20) {
+              return text;
+            }
+          }
+        }
+
+        return null;
+      });
+
+      if (!originalPriceString) return null;
+
+      // Parse the price string (same logic as extractPrice)
+      const cleaned = originalPriceString
+        .replace(/[^\d,.-]/g, '')
+        .trim();
+
+      if (!cleaned) return null;
+
+      // Normalize price format
+      const normalized = cleaned.includes(',') && cleaned.lastIndexOf(',') > cleaned.lastIndexOf('.')
+        ? cleaned.replace(/\./g, '').replace(',', '.')  // German format: 1.299,99 -> 1299.99
+        : cleaned.replace(/,/g, '');                      // English format: 1,299.99 -> 1299.99
+
+      const value = Number(normalized);
+
+      return Number.isFinite(value) ? value : null;
     } catch (error) {
       return null;
     }

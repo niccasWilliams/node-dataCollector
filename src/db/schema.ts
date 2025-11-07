@@ -159,6 +159,9 @@ export const appSettings = pgTable("app_settings", {
 
 
 
+
+
+
 /**
  * TYPES
  *
@@ -198,6 +201,7 @@ export type RolePermissionId = typeof rolePermissions.$inferSelect["id"];
 export type RoleAssignment = typeof roleAssignments.$inferSelect;
 export type RoleAssignmentId = typeof roleAssignments.$inferSelect["id"];
 export type RoleAssignmentStatus = typeof roleAssignmentStatusEnum.enumValues[number];
+
 
 
 

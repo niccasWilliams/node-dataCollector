@@ -4,7 +4,7 @@ import { priceScraperService, type ScrapedProductData, type ScraperConfig } from
 import { AmazonAdapter } from "./adapters/amazon.adapter";
 import { MediaMarktAdapter } from "./adapters/mediamarkt.adapter";
 import { productService } from "@/routes/products";
-import type { ProductInsert, ProductSourceInsert, ProductPrice } from "@/db/individual/individual-schema";
+import type { ProductInsert, ProductSourceInsert } from "@/db/individual/individual-schema";
 import * as websiteRepo from "@/routes/websites/website.repository";
 import type * as productRepo from "@/routes/products/product.repository";
 import { productMatchingService } from "@/services/matching/product-matching.service";
@@ -64,9 +64,9 @@ export class ScrapingOrchestrator {
       if (options?.sessionId) {
         sessionId = options.sessionId;
       } else {
+        // Humanized interactions are now always enabled by default
         const session = await browserHandler.createSession({
           headless: true,
-          humanizedInteractions: humanized,
         });
         sessionId = session.id.toString();
         createdSession = true;

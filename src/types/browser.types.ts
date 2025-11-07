@@ -5,6 +5,7 @@ export interface BrowserSession {
   title: string | null;
   createdAt: Date;
   lastActivityAt: Date;
+  closedAt?: Date; // Optional: When session was closed
 }
 
 export interface NavigationOptions {
@@ -20,31 +21,84 @@ export interface ScreenshotOptions {
   path?: string;
 }
 
+/**
+ * BrowserConfig - Simplified Configuration
+ *
+ * Most settings are now internal defaults for maximum safety:
+ * - Stealth Mode: Always ON (Chromium + Extensions)
+ * - Humanized: Always ON (slowMo 100ms, natural interactions)
+ * - Headless: Always OFF (visible for authenticity)
+ * - Cookie Consent: Always auto-reject
+ *
+ * Only configure what you really need!
+ */
 export interface BrowserConfig {
-  headless?: boolean;
-  slowMo?: number;
-  devtools?: boolean;
-  executablePath?: string;
-  args?: string[];
-  viewport?: {
-    width: number;
-    height: number;
-  };
-  /** Enable humanized interactions (mouse movements, typing, etc.) */
-  humanizedInteractions?: boolean;
-  /** CAPTCHA solver configuration */
-  captchaSolver?: {
-    provider: 'none' | '2captcha' | 'capsolver' | 'anticaptcha';
-    apiKey?: string;
-    timeout?: number;
-  };
-  /** Automatic cookie consent handling */
+  // ========== PROFILE MANAGEMENT ==========
+  /**
+   * Use persistent browser profile (stays logged in across sessions!)
+   * - true: Auto-create profile based on first URL
+   * - string: Use specific profile name (e.g., "onlogist")
+   * - false/undefined: Temporary session (default)
+   *
+   * Example:
+   *   persistProfile: 'onlogist'  // Always same fingerprint & cookies
+   */
+  persistProfile?: boolean | string;
+
+  // ========== BOT DETECTION ==========
+  /**
+   * Enable automatic bot-detection detection (monitors for CAPTCHA, blocks, etc.)
+   * DEFAULT: true
+   */
+  botDetection?: boolean;
+
+  /**
+   * What to do when bot detection is detected:
+   * - 'warn': Log warning and continue (default)
+   * - 'stop': Stop session immediately
+   * - 'ignore': Don't check at all
+   */
+  onBotDetected?: 'warn' | 'stop' | 'ignore';
+
+  // ========== INTERNAL (rarely needed) ==========
+  /**
+   * @internal - Use legacy browser (NOT RECOMMENDED!)
+   * Default: false (always use Stealth)
+   */
+  useStealth?: boolean;
+
+  /**
+   * @internal - Custom Chrome extensions (rarely needed)
+   * Default: Dummy extension for authenticity
+   */
+  extensions?: string[];
+
+  /**
+   * @internal - Cookie consent config (rarely needed)
+   * Default: Auto-reject enabled
+   */
   cookieConsent?: CookieConsentConfig;
-  /** Navigation defaults */
+
+  /**
+   * @internal - Navigation defaults (rarely needed)
+   * Default: domcontentloaded, 45s timeout
+   */
   navigation?: {
     waitUntil?: 'load' | 'domcontentloaded' | 'networkidle' | 'commit';
     timeout?: number;
   };
+
+  /**
+   * @internal - Headless mode (NOT RECOMMENDED for stealth!)
+   * Default: false (visible)
+   */
+  headless?: boolean;
+
+  /**
+   * @internal - Slow motion delay (ms)
+   * Default: 100ms (humanized)
+   */
+  slowMo?: number;
 }
 
 export interface CookieConsentConfig {

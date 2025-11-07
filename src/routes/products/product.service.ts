@@ -5,12 +5,12 @@ import type {
   ProductInsert,
   ProductSource,
   ProductSourceInsert,
-  ProductPrice,
-  ProductPriceInsert,
+  PriceHistory,
   PriceHistoryInsert,
   PriceAlert,
   PriceAlertInsert,
   MergedProduct,
+  ProductAvailability,
 } from "@/db/individual/individual-schema";
 import * as productRepo from "./product.repository";
 
@@ -172,53 +172,38 @@ export class ProductService {
   // ============================================================================
 
   /**
-   * Update price for a VARIANT+SOURCE combination (NEW!)
-   * This is now the main method for saving prices
-   * Automatically records price history and checks alerts
+   * Update price for a VARIANT+SOURCE combination
+   * NEW: Smart price tracking logic:
+   * - If ANYTHING changes (price, offer, availability) → New priceHistory entry
+   * - If EVERYTHING stays the same → Just update updatedAt (extends validity period)
    */
   async updatePriceForVariant(
     variantId: number,
     productSourceId: number,
-    priceData: Omit<ProductPriceInsert, "variantId" | "productSourceId">
+    priceData: {
+      price: string;
+      currency?: string;
+      originalPrice?: string | null;
+      discountPercentage?: string | null;
+      availability?: ProductAvailability;
+      stockQuantity?: number | null;
+      shippingCost?: string | null;
+      metadata?: Record<string, unknown>;
+    }
   ): Promise<{
-    currentPrice: ProductPrice;
+    currentPrice: PriceHistory;
     priceChanged: boolean;
     triggeredAlerts?: PriceAlert[];
   }> {
-    logger.info(`Updating price for variant ${variantId}, source ${productSourceId}: €${priceData.price}`);
+    logger.info(`Checking price for variant ${variantId}, source ${productSourceId}: €${priceData.price}`);
 
     // Get current price to detect changes
-    const currentPrice = await productRepo.getCurrentPrice(variantId, productSourceId);
+    const previousPrice = await productRepo.getCurrentPrice(variantId, productSourceId);
 
-    const priceChanged = currentPrice
-      ? currentPrice.price !== priceData.price.toString()
-      : false;
+    // First price ever? Create new entry
+    if (!previousPrice) {
+      logger.info(`🆕 First price recorded: €${priceData.price}`);
 
-    let priceDelta: string | null = null;
-    let percentageChange: string | null = null;
-
-    if (priceChanged && currentPrice) {
-      const oldPrice = Number(currentPrice.price);
-      const newPrice = Number(priceData.price);
-      priceDelta = (newPrice - oldPrice).toFixed(2);
-      percentageChange = (((newPrice - oldPrice) / oldPrice) * 100).toFixed(2);
-
-      logger.info(
-        `Price changed: €${oldPrice} → €${newPrice} (${percentageChange > "0" ? "+" : ""}${percentageChange}%)`
-      );
-    }
-
-    // Update current price
-    const updatedPrice = await this.retryService.execute(() =>
-      productRepo.upsertProductPrice({
-        variantId,
-        productSourceId,
-        ...priceData,
-      })
-    );
-
-    // Record in price history if price changed or it's a new price
-    if (priceChanged || !currentPrice) {
       const historyData: PriceHistoryInsert = {
         variantId,
         productSourceId,
@@ -228,56 +213,94 @@ export class ProductService {
         discountPercentage: priceData.discountPercentage ?? null,
         availability: priceData.availability ?? "unknown",
         stockQuantity: priceData.stockQuantity ?? null,
-        priceChanged,
-        priceDelta,
-        percentageChange,
+        priceChanged: false, // First entry is not a "change"
+        priceDelta: null,
+        percentageChange: null,
         metadata: priceData.metadata ?? {},
       };
 
-      await this.retryService.execute(() => productRepo.addPriceHistory(historyData));
-    } else {
-      const updatedHistory = await this.retryService.execute(() =>
-        productRepo.updateLatestPriceHistory(variantId, productSourceId, {
-          price: priceData.price,
-          ...(priceData.currency !== undefined ? { currency: priceData.currency } : {}),
-          ...(priceData.originalPrice !== undefined ? { originalPrice: priceData.originalPrice ?? null } : {}),
-          ...(priceData.discountPercentage !== undefined
-            ? { discountPercentage: priceData.discountPercentage }
-            : {}),
-          ...(priceData.availability !== undefined ? { availability: priceData.availability } : {}),
-          ...(priceData.stockQuantity !== undefined ? { stockQuantity: priceData.stockQuantity } : {}),
-          ...(priceData.metadata !== undefined && priceData.metadata !== null
-            ? { metadata: priceData.metadata as Record<string, unknown> }
-            : {}),
-        })
+      const newHistoryEntry = await this.retryService.execute(() =>
+        productRepo.addPriceHistory(historyData)
       );
 
-      if (!updatedHistory) {
-        const fallbackHistory: PriceHistoryInsert = {
-          variantId,
-          productSourceId,
-          price: priceData.price,
-          currency: priceData.currency ?? "EUR",
-          originalPrice: priceData.originalPrice ?? null,
-          discountPercentage: priceData.discountPercentage ?? null,
-          availability: priceData.availability ?? "unknown",
-          stockQuantity: priceData.stockQuantity ?? null,
-          priceChanged: false,
-          priceDelta: null,
-          percentageChange: null,
-          metadata: priceData.metadata ?? {},
-        };
-
-        await this.retryService.execute(() => productRepo.addPriceHistory(fallbackHistory));
-      }
+      return {
+        currentPrice: newHistoryEntry,
+        priceChanged: false,
+        triggeredAlerts: undefined,
+      };
     }
+
+    // Check if ANYTHING changed (price, originalPrice, discountPercentage, or availability)
+    const priceChanged = previousPrice.price !== priceData.price.toString();
+    const offerChanged = previousPrice.originalPrice !== (priceData.originalPrice ?? null);
+    const discountChanged = previousPrice.discountPercentage !== (priceData.discountPercentage ?? null);
+    const availabilityChanged = previousPrice.availability !== (priceData.availability ?? "unknown");
+
+    const anythingChanged = priceChanged || offerChanged || discountChanged || availabilityChanged;
+
+    // If NOTHING changed → Just update updatedAt (price is still valid)
+    if (!anythingChanged) {
+      logger.debug(`✓ Price/offer unchanged: €${priceData.price} - extending validity`);
+
+      const touchedEntry = await this.retryService.execute(() =>
+        productRepo.touchLatestPriceHistory(variantId, productSourceId)
+      );
+
+      return {
+        currentPrice: touchedEntry || previousPrice,
+        priceChanged: false,
+        triggeredAlerts: undefined,
+      };
+    }
+
+    // Something changed! Create new history entry
+    let priceDelta: string | null = null;
+    let percentageChange: string | null = null;
+
+    if (priceChanged) {
+      const oldPrice = Number(previousPrice.price);
+      const newPrice = Number(priceData.price);
+      priceDelta = (newPrice - oldPrice).toFixed(2);
+      percentageChange = (((newPrice - oldPrice) / oldPrice) * 100).toFixed(2);
+
+      logger.info(
+        `💰 Price changed: €${oldPrice} → €${newPrice} (${percentageChange > "0" ? "+" : ""}${percentageChange}%)`
+      );
+    }
+
+    if (offerChanged) {
+      logger.info(`🎁 Offer changed: ${previousPrice.originalPrice} → ${priceData.originalPrice}`);
+    }
+
+    if (availabilityChanged) {
+      logger.info(`📦 Availability changed: ${previousPrice.availability} → ${priceData.availability}`);
+    }
+
+    const historyData: PriceHistoryInsert = {
+      variantId,
+      productSourceId,
+      price: priceData.price,
+      currency: priceData.currency ?? "EUR",
+      originalPrice: priceData.originalPrice ?? null,
+      discountPercentage: priceData.discountPercentage ?? null,
+      availability: priceData.availability ?? "unknown",
+      stockQuantity: priceData.stockQuantity ?? null,
+      priceChanged,
+      priceDelta,
+      percentageChange,
+      metadata: priceData.metadata ?? {},
+    };
+
+    const newHistoryEntry = await this.retryService.execute(() =>
+      productRepo.addPriceHistory(historyData)
+    );
 
     // Check and trigger alerts if price changed
     // TODO: Implement variant-aware alert checking
     let triggeredAlerts: PriceAlert[] | undefined = undefined;
 
     return {
-      currentPrice: updatedPrice,
+      currentPrice: newHistoryEntry,
       priceChanged,
       triggeredAlerts,
     };
@@ -285,18 +308,11 @@ export class ProductService {
 
   /**
    * Update price for a product source (DEPRECATED - use updatePriceForVariant instead)
-   * Kept for backward compatibility during migration
+   * This function is no longer supported!
    */
-  async updatePrice(
-    productSourceId: number,
-    priceData: Omit<ProductPriceInsert, "productSourceId">
-  ): Promise<{
-    currentPrice: ProductPrice;
-    priceChanged: boolean;
-    triggeredAlerts: PriceAlert[];
-  }> {
+  async updatePrice(): Promise<never> {
     throw new Error(
-      "updatePrice is deprecated - use updatePriceForVariant instead. Prices must be saved per variant+source."
+      "updatePrice is DEPRECATED and removed! Use updatePriceForVariant instead. Prices must be saved per variant+source."
     );
   }
 

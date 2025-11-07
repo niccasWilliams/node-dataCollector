@@ -1,4 +1,7 @@
 import { BrowserService } from './browser.service';
+import { browserStealthService, type StealthSession } from './browser-stealth.service';
+import { botDetectionService, type BotDetectionResult } from './bot-detection.service';
+import { userDataService } from './user-data.service';
 import { upsertBrowserSession, recordBrowserActivity } from './browser.repository';
 import type {
   BrowserSession,
@@ -12,45 +15,147 @@ import type {
 } from '../../types/browser.types';
 import type { BrowserActivityType } from '@/db/individual/individual-schema';
 import { storeWebsiteSnapshot, type PageSnapshot, INTERACTIVE_TAGS } from '../../routes/websites/website.repository';
+import path from 'path';
+import { logger } from '@/utils/logger';
 
 /**
- * BrowserUseCase - High-level API for browser automation
+ * BrowserHandler - High-level API for browser automation
  *
- * Manages multiple browser instances and provides a clean API
+ * NOW USES STEALTH BROWSER BY DEFAULT! 🔒
+ * All sessions are created with maximum anti-detection.
  */
 export class BrowserHandler {
   private instances: Map<string, BrowserService> = new Map();
+  private stealthSessions: Map<string, StealthSession> = new Map();
   private defaultConfig: Partial<BrowserConfig>;
   private sessionConfigs: Map<string, Partial<BrowserConfig>> = new Map();
+  private useStealth: boolean = true; // NEW: Default to stealth!
 
   constructor(defaultConfig: Partial<BrowserConfig> = {}) {
     this.defaultConfig = defaultConfig;
+    // Default to stealth mode (can be disabled with useStealth: false)
+    this.useStealth = defaultConfig.useStealth !== false;
   }
 
   /**
-   * Create a new browser session
+   * Create a new browser session - NOW WITH STEALTH BY DEFAULT! 🔒
    */
   async createSession(config?: Partial<BrowserConfig>): Promise<BrowserSession> {
     const mergedConfig = { ...this.defaultConfig, ...config };
     const sanitizedConfig = JSON.parse(JSON.stringify(mergedConfig ?? {})) as Partial<BrowserConfig>;
-    const service = new BrowserService(mergedConfig);
+
+    // Determine if we should use stealth (default: YES!)
+    const shouldUseStealth = mergedConfig.useStealth !== false && this.useStealth;
+
+    if (shouldUseStealth) {
+      logger.info('[BrowserHandler] 🔒 Creating STEALTH session (default)');
+      return await this.createStealthSession(sanitizedConfig);
+    } else {
+      // Legacy mode (deprecated!)
+      logger.warn('[BrowserHandler] ⚠️ Creating LEGACY session (not recommended!)');
+      return await this.createLegacySession(sanitizedConfig);
+    }
+  }
+
+  /**
+   * Create STEALTH session (NEW DEFAULT!)
+   */
+  private async createStealthSession(config: Partial<BrowserConfig>): Promise<BrowserSession> {
+    // Extensions: Always use dummy extension for maximum authenticity!
+    // Real users have extensions, bots don't!
+    const extensionsPath = config.extensions || [
+      path.resolve(__dirname, '../../../extensions/dummy-extension'),
+    ];
+
+    // Handle persistent profile
+    let userDataDir: string | undefined;
+    let fingerprintSeed: number | undefined;
+    if (config.persistProfile) {
+      if (typeof config.persistProfile === 'string') {
+        // Use specific profile name
+        const profile = await userDataService.getOrCreateProfile(config.persistProfile);
+        userDataDir = profile.path;
+        fingerprintSeed = profile.fingerprintSeed;
+        logger.info(`[BrowserHandler] 🔐 Using persistent profile: ${profile.name}`);
+      } else {
+        // Auto-create profile based on first URL (will be set later)
+        // For now, create a generic profile
+        const profile = await userDataService.getOrCreateProfile('default-profile');
+        userDataDir = profile.path;
+        fingerprintSeed = profile.fingerprintSeed;
+        logger.info(`[BrowserHandler] 🔐 Using persistent profile: ${profile.name} (auto-created)`);
+      }
+    }
+
+    try {
+      // Create stealth session with SENSIBLE DEFAULTS
+      const stealthSession = await browserStealthService.createStealthSession({
+        headless: config.headless ?? false, // Default: visible
+        slowMo: config.slowMo ?? 100, // Default: humanized (100ms)
+        extensions: extensionsPath, // Always use extensions for authenticity
+        userDataDir, // Use persistent profile if configured
+        fingerprintSeed, // Keep fingerprint consistent with profile
+      });
+
+      // Store session
+      this.stealthSessions.set(stealthSession.id, stealthSession);
+      this.sessionConfigs.set(stealthSession.id, config);
+
+      // Convert to BrowserSession for compatibility
+      const session: BrowserSession = {
+        id: stealthSession.id,
+        status: stealthSession.status,
+        currentUrl: stealthSession.currentUrl,
+        title: stealthSession.title,
+        createdAt: stealthSession.createdAt,
+        lastActivityAt: stealthSession.lastActivityAt,
+        closedAt: stealthSession.closedAt,
+      };
+
+      await this.persistSessionData(session, { config });
+
+      return session;
+    } catch (error) {
+      // Fallback: If Chromium not installed, use Legacy with warning
+      logger.warn('[BrowserHandler] ⚠️ Stealth mode failed (Chromium not installed?), falling back to Legacy mode');
+      logger.warn('[BrowserHandler] 💡 Install Chromium: npx patchright install chromium');
+      logger.warn('[BrowserHandler] ⚠️ Using Legacy browser WITHOUT extensions and anti-detection!');
+
+      // Fall back to legacy
+      return await this.createLegacySession(config);
+    }
+  }
+
+  /**
+   * Create LEGACY session (DEPRECATED!)
+   */
+  private async createLegacySession(config: Partial<BrowserConfig>): Promise<BrowserSession> {
+    const service = new BrowserService(config);
 
     // Setup event forwarding
     this.setupEventForwarding(service);
 
     const session = await service.initialize();
     this.instances.set(session.id, service);
-    this.sessionConfigs.set(session.id, sanitizedConfig);
+    this.sessionConfigs.set(session.id, config);
 
-    await this.persistSessionData(session, { config: sanitizedConfig });
+    await this.persistSessionData(session, { config });
 
     return session;
   }
 
   /**
-   * Get browser service by session ID
+   * Get browser service by session ID (supports both Stealth and Legacy!)
    */
   private getService(sessionId: string): BrowserService {
+    // Try stealth first
+    const stealthSession = this.stealthSessions.get(sessionId);
+    if (stealthSession) {
+      // Return a compatibility wrapper for stealth sessions
+      return this.createStealthServiceWrapper(stealthSession);
+    }
+
+    // Fall back to legacy
     const service = this.instances.get(sessionId);
     if (!service) {
       throw new Error(`Browser session not found: ${sessionId}`);
@@ -59,11 +164,186 @@ export class BrowserHandler {
   }
 
   /**
+   * Create a wrapper that makes Stealth session look like BrowserService
+   */
+  private createStealthServiceWrapper(stealthSession: StealthSession): any {
+    const { page } = stealthSession;
+
+    // Return an object that mimics BrowserService API
+    return {
+      navigate: async (options: NavigationOptions) => {
+        await page.goto(options.url, {
+          waitUntil: options.waitUntil || 'domcontentloaded',
+          timeout: options.timeout || 30000,
+        });
+        // Update session
+        stealthSession.currentUrl = page.url();
+        stealthSession.title = await page.title();
+        stealthSession.lastActivityAt = new Date();
+      },
+      screenshot: async (options?: ScreenshotOptions) => {
+        return await page.screenshot({
+          fullPage: options?.fullPage ?? false,
+          type: options?.type || 'png',
+          quality: options?.quality,
+          path: options?.path,
+        });
+      },
+      interact: async (interaction: any) => {
+        const { type, selector, value, options } = interaction;
+        switch (type) {
+          case 'click':
+            await page.click(selector!, options);
+            break;
+          case 'type':
+            await page.fill(selector!, value!);
+            break;
+          case 'select':
+            await page.selectOption(selector!, value!);
+            break;
+          case 'hover':
+            await page.hover(selector!);
+            break;
+          case 'scroll':
+            await page.evaluate(({ x, y }) => window.scrollTo(x || 0, y || 0), options || {});
+            break;
+        }
+        stealthSession.lastActivityAt = new Date();
+      },
+      waitFor: async (options: any) => {
+        if (options.selector) {
+          await page.waitForSelector(options.selector, {
+            timeout: options.timeout || 30000,
+            state: options.state || 'visible',
+          });
+        }
+      },
+      evaluate: async <T>(script: string | Function, ...args: any[]): Promise<T> => {
+        return await page.evaluate(script as any, ...args);
+      },
+      getPageInfo: async (): Promise<PageInfo> => {
+        const url = page.url();
+        const title = await page.title();
+        const cookies = await stealthSession.context.cookies();
+        const localStorage = await page.evaluate(() => {
+          const items: Record<string, string> = {};
+          for (let i = 0; i < window.localStorage.length; i++) {
+            const key = window.localStorage.key(i);
+            if (key) {
+              items[key] = window.localStorage.getItem(key) || '';
+            }
+          }
+          return items;
+        });
+        return { url, title, cookies, localStorage };
+      },
+      getHTML: async (): Promise<string> => {
+        return await page.content();
+      },
+      getElements: async (options: ElementQueryOptions): Promise<PageElement[]> => {
+        // TODO: Implement element collection for stealth
+        return [];
+      },
+      logout: async (options?: LogoutOptions): Promise<boolean> => {
+        // TODO: Implement logout for stealth
+        return false;
+      },
+      goBack: async () => {
+        await page.goBack();
+        stealthSession.currentUrl = page.url();
+        stealthSession.title = await page.title();
+      },
+      goForward: async () => {
+        await page.goForward();
+        stealthSession.currentUrl = page.url();
+        stealthSession.title = await page.title();
+      },
+      reload: async () => {
+        await page.reload();
+      },
+      getSession: () => ({
+        id: stealthSession.id,
+        status: stealthSession.status,
+        currentUrl: stealthSession.currentUrl,
+        title: stealthSession.title,
+        createdAt: stealthSession.createdAt,
+        lastActivityAt: stealthSession.lastActivityAt,
+      }),
+      close: async () => {
+        await browserStealthService.closeSession(stealthSession.id);
+        stealthSession.status = 'closed';
+        stealthSession.closedAt = new Date();
+      },
+      // Humanized methods
+      clickHumanized: async (selector: string, options?: any) => {
+        await page.click(selector, options);
+        stealthSession.lastActivityAt = new Date();
+      },
+      typeHumanized: async (text: string, selector?: string) => {
+        if (selector) {
+          await page.fill(selector, text);
+        }
+        stealthSession.lastActivityAt = new Date();
+      },
+      scrollHumanized: async (options?: any) => {
+        const direction = options?.direction || 'down';
+        const amount = options?.amount || 500;
+        const y = direction === 'down' ? amount : -amount;
+        await page.evaluate((scrollY) => window.scrollBy(0, scrollY), y);
+      },
+      simulateReading: async (duration?: number) => {
+        await page.waitForTimeout(duration || 3000);
+      },
+      solveAnyCaptcha: async () => null,
+      solveRecaptchaV2: async () => null,
+      solveHCaptcha: async () => null,
+    };
+  }
+
+  /**
    * Navigate to URL
    */
   async navigate(sessionId: string, url: string, options?: Partial<NavigationOptions>): Promise<void> {
     const service = this.getService(sessionId);
+    const config = this.sessionConfigs.get(sessionId);
+
     await service.navigate({ url, ...options });
+
+    // Bot-Detection Check (if enabled)
+    const shouldCheckBotDetection = config?.botDetection !== false; // Default: true
+    if (shouldCheckBotDetection) {
+      const stealthSession = this.stealthSessions.get(sessionId);
+      if (stealthSession) {
+        const { page } = stealthSession;
+
+        // Check for bot detection
+        const botCheck = await botDetectionService.checkPage(page);
+
+        if (botCheck.detected) {
+          const action = config?.onBotDetected || 'warn';
+
+          if (action === 'stop') {
+            logger.error('[BrowserHandler] 🚨 BOT DETECTED! Stopping session.', {
+              confidence: botCheck.confidence,
+              indicators: botCheck.indicators.length,
+              url: botCheck.url,
+            });
+
+            // Close session immediately
+            await this.closeSession(sessionId);
+            throw new Error(`Bot detected with ${botCheck.confidence}% confidence. Session stopped for safety.`);
+          } else if (action === 'warn') {
+            logger.warn('[BrowserHandler] ⚠️ BOT DETECTION WARNING', {
+              confidence: botCheck.confidence,
+              indicators: botCheck.indicators.map(i => i.type).join(', '),
+              url: botCheck.url,
+            });
+          }
+          // 'ignore' = do nothing
+        }
+      }
+    }
+
     try {
       const pageInfo = await service.getPageInfo();
       await storeWebsiteSnapshot({
@@ -272,13 +552,25 @@ export class BrowserHandler {
   }
 
   /**
-   * Close session
+   * Close session (supports both Stealth and Legacy!)
    */
   async closeSession(sessionId: string): Promise<void> {
-    const service = this.getService(sessionId);
-    await service.close();
-    this.instances.delete(sessionId);
-    this.sessionConfigs.delete(sessionId);
+    // Check if it's a stealth session first
+    const stealthSession = this.stealthSessions.get(sessionId);
+    if (stealthSession) {
+      await browserStealthService.closeSession(sessionId);
+      this.stealthSessions.delete(sessionId);
+      this.sessionConfigs.delete(sessionId);
+      return;
+    }
+
+    // Otherwise, handle legacy session
+    const service = this.instances.get(sessionId);
+    if (service) {
+      await service.close();
+      this.instances.delete(sessionId);
+      this.sessionConfigs.delete(sessionId);
+    }
   }
 
   /**
@@ -737,15 +1029,36 @@ export class BrowserHandler {
   }
 }
 
-// Export singleton instance
+/**
+ * Export singleton instance with SENSIBLE DEFAULTS
+ *
+ * All defaults are optimized for maximum stealth and safety:
+ * - Stealth Mode: ON (Chromium + Extensions)
+ * - Headless: OFF (visible = more authentic)
+ * - Humanized: ON (slowMo 100ms)
+ * - Cookie Consent: Auto-reject
+ * - Bot Detection: ON (warns if detected)
+ *
+ * You rarely need to configure anything!
+ *
+ * Usage:
+ *   // Simple session (no profile)
+ *   const session = await browserHandler.createSession();
+ *
+ *   // Persistent profile (stays logged in!)
+ *   const session = await browserHandler.createSession({
+ *     persistProfile: 'onlogist',
+ *   });
+ */
 export const browserHandler = new BrowserHandler({
-  headless: false,
-  slowMo: 100,
+  // Internal defaults (rarely changed)
+  headless: false, // Visible = more authentic
+  slowMo: 100, // Humanized timing
   cookieConsent: {
-    autoReject: true,
+    autoReject: true, // Always reject cookies automatically
   },
   navigation: {
-    waitUntil: 'domcontentloaded',
-    timeout: 45000,
+    waitUntil: 'domcontentloaded', // Fast enough for most cases
+    timeout: 45000, // 45s timeout
   },
 });

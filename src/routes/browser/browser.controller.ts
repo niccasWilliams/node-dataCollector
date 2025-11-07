@@ -722,6 +722,115 @@ async solveHCaptcha(req: Request, res: Response) {
   }
 }
 
+// ============================================================================
+// Safety Features - Bot Detection & Profiles
+// ============================================================================
+
+async checkBotDetection(req: Request, res: Response) {
+  try {
+    const { sessionId } = req.params;
+    const { botDetectionService } = await import('@/services/browser/bot-detection.service');
+
+    // Get stealth session from browserHandler
+    const stealthSession = (browserHandler as any).stealthSessions?.get(sessionId);
+
+    if (!stealthSession) {
+      return res.status(404).json({
+        success: false,
+        error: 'Session not found or not a stealth session',
+      });
+    }
+
+    const result = await botDetectionService.checkPage(stealthSession.page);
+
+    res.json({
+      success: true,
+      data: result,
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+}
+
+async getProfiles(_req: Request, res: Response) {
+  try {
+    const { userDataService } = await import('@/services/browser/user-data.service');
+
+    const profiles = await userDataService.getAllProfiles();
+
+    res.json({
+      success: true,
+      data: profiles,
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+}
+
+async deleteProfile(req: Request, res: Response) {
+  try {
+    const { profileName } = req.params;
+    const { userDataService } = await import('@/services/browser/user-data.service');
+
+    if (!profileName || typeof profileName !== 'string') {
+      return res.status(400).json({
+        success: false,
+        error: 'profileName is required',
+      });
+    }
+
+    const deleted = await userDataService.deleteProfile(profileName);
+
+    if (deleted) {
+      res.json({
+        success: true,
+        message: `Profile "${profileName}" deleted successfully`,
+      });
+    } else {
+      res.status(404).json({
+        success: false,
+        error: 'Profile not found',
+      });
+    }
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+}
+
+async cleanupProfiles(req: Request, res: Response) {
+  try {
+    const { daysOld } = req.body || {};
+    const { userDataService } = await import('@/services/browser/user-data.service');
+
+    const days = typeof daysOld === 'number' && daysOld > 0 ? daysOld : 30;
+
+    const deleted = await userDataService.cleanupOldProfiles(days);
+
+    res.json({
+      success: true,
+      data: {
+        deleted,
+        daysOld: days,
+      },
+      message: `Deleted ${deleted} profile(s) older than ${days} days`,
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+}
+
 }
 
 export const browserController = new BrowserController();

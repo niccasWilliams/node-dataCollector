@@ -513,6 +513,9 @@ export class ProductMatchingService {
         })
         .where(eq(mergedProducts.id, mergedProduct.id));
 
+      // Clean up orphaned merged products that may have been left behind
+      await this.cleanupOrphanedMergedProducts(tx);
+
       logger.info(`[ProductMerge] Successfully merged products into merged product ${mergedProduct.id}`);
 
       return mergedProduct;
@@ -770,13 +773,16 @@ export class ProductMatchingService {
    * - If variant with same fingerprint exists, consolidate
    * - If variant is unique, move it
    * - Clean up orphaned variants and merged products
+   *
+   * NEW: priceHistory entries are NOT moved - they stay with their original variant+source!
+   * Price history is immutable and preserves the complete trail.
    */
   private async copyAttributesToMergedProduct(
     tx: any,
     sourceProducts: Product[],
     mergedProductId: number
   ): Promise<void> {
-    const { productPrices } = await import("@/db/individual/individual-schema");
+    const { priceHistory: priceHistoryTable } = await import("@/db/individual/individual-schema");
 
     for (const product of sourceProducts) {
       const variant =
@@ -803,12 +809,6 @@ export class ProductMatchingService {
           `[ProductMerge] Found duplicate variant (fingerprint: ${variant.fingerprint}). Consolidating variant ${variant.id} into ${existingVariant.id}`
         );
 
-        // 1. Update the old variant's primaryProductId to null (we'll delete it anyway)
-        // And set the products to use the existing variant
-        const productsUsingOldVariant = await tx.select().from(productVariants).where(
-          eq(productVariants.id, variant.id)
-        );
-
         // Update primaryProductId on the existing variant if it doesn't have one
         if (!existingVariant.primaryProductId && variant.primaryProductId) {
           await tx
@@ -817,33 +817,17 @@ export class ProductMatchingService {
             .where(eq(productVariants.id, existingVariant.id));
         }
 
-        // 2. Move prices from old variant to existing variant (if not duplicates)
-        const oldPrices = await tx.select().from(productPrices).where(
-          eq(productPrices.variantId, variant.id)
+        // Move priceHistory entries from old variant to existing variant
+        await tx
+          .update(priceHistoryTable)
+          .set({ variantId: existingVariant.id })
+          .where(eq(priceHistoryTable.variantId, variant.id));
+
+        logger.info(
+          `[ProductMerge] Moved price history from variant ${variant.id} to ${existingVariant.id}`
         );
 
-        for (const price of oldPrices) {
-          // Check if price for this source already exists
-          const existingPrice = await tx.query.productPrices.findFirst({
-            where: and(
-              eq(productPrices.variantId, existingVariant.id),
-              eq(productPrices.productSourceId, price.productSourceId)
-            ),
-          });
-
-          if (!existingPrice) {
-            // Move price to existing variant
-            await tx
-              .update(productPrices)
-              .set({ variantId: existingVariant.id, updatedAt: new Date() })
-              .where(eq(productPrices.id, price.id));
-          } else {
-            // Price already exists, delete the old one
-            await tx.delete(productPrices).where(eq(productPrices.id, price.id));
-          }
-        }
-
-        // 3. Delete the orphaned variant
+        // Delete the orphaned variant
         await tx.delete(productVariants).where(eq(productVariants.id, variant.id));
 
         logger.info(

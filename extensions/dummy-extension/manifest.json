@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "Privacy Settings Helper",
+  "version": "1.2.0",
+  "description": "Helps manage privacy settings and preferences",
+  "permissions": [],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "icons": {
+    "16": "icon.png",
+    "48": "icon.png",
+    "128": "icon.png"
+  },
+  "action": {
+    "default_title": "Privacy Settings"
+  }
+}

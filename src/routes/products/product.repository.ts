@@ -2,7 +2,6 @@ import { database } from "@/db";
 import {
   products,
   productSources,
-  productPrices,
   priceHistory,
   priceAlerts,
   websitePages,
@@ -13,8 +12,6 @@ import {
   type ProductInsert,
   type ProductSource,
   type ProductSourceInsert,
-  type ProductPrice,
-  type ProductPriceInsert,
   type PriceHistory,
   type PriceHistoryInsert,
   type PriceAlert,
@@ -45,7 +42,7 @@ export type ProductVariantSummary = ProductVariant | null;
 export type ProductWithSources = Product & {
   variant: ProductVariantSummary;
   sources: (ProductSource & {
-    currentPrice: ProductPrice | null;
+    currentPrice: PriceHistory | null; // Changed from ProductPrice to PriceHistory (latest entry)
     domain: string;
     url: string;
   })[];
@@ -142,6 +139,7 @@ export async function createProduct(data: ProductInsert): Promise<Product> {
 
 /**
  * Get product by ID with all sources and prices
+ * NEW: Prices are fetched from priceHistory (latest entry per source)
  */
 export async function getProductById(
   productId: number
@@ -156,27 +154,19 @@ export async function getProductById(
     return null;
   }
 
-  // Get all sources with their current prices
+  // Get all sources
   const sourcesData = await database
     .select({
       source: productSources,
-      currentPrice: productPrices,
       domain: websites.domain,
       url: websitePages.url,
     })
     .from(productSources)
-    .leftJoin(productPrices, eq(productPrices.productSourceId, productSources.id))
     .innerJoin(websitePages, eq(websitePages.id, productSources.websitePageId))
     .innerJoin(websites, eq(websites.id, websitePages.websiteId))
     .where(eq(productSources.productId, productId));
 
-  const sources = sourcesData.map((row) => ({
-    ...row.source,
-    currentPrice: row.currentPrice,
-    domain: row.domain,
-    url: row.url,
-  }));
-
+  // Get variant for this product
   const variantRow = await database
     .select()
     .from(productVariants)
@@ -184,6 +174,37 @@ export async function getProductById(
     .limit(1);
 
   const variant: ProductVariantSummary = variantRow[0] ?? null;
+
+  // For each source, get the latest price from priceHistory
+  const sources = await Promise.all(
+    sourcesData.map(async (row) => {
+      let currentPrice: PriceHistory | null = null;
+
+      if (variant) {
+        // Get latest price history entry for this variant+source combination
+        const latestPrice = await database
+          .select()
+          .from(priceHistory)
+          .where(
+            and(
+              eq(priceHistory.variantId, variant.id),
+              eq(priceHistory.productSourceId, row.source.id)
+            )
+          )
+          .orderBy(desc(priceHistory.recordedAt))
+          .limit(1);
+
+        currentPrice = latestPrice[0] ?? null;
+      }
+
+      return {
+        ...row.source,
+        currentPrice,
+        domain: row.domain,
+        url: row.url,
+      };
+    })
+  );
 
   return {
     ...product[0],
@@ -309,18 +330,16 @@ export async function listProducts(
     .limit(normalizedLimit)
     .offset(normalizedOffset);
 
-  // Fetch sources and prices for each product
+  // Fetch sources for each product (without prices for now - they come from priceHistory)
   const productIds = productList.map((p) => p.id);
   const sourcesData = productIds.length
     ? await database
         .select({
           source: productSources,
-          currentPrice: productPrices,
           domain: websites.domain,
           url: websitePages.url,
         })
         .from(productSources)
-        .leftJoin(productPrices, eq(productPrices.productSourceId, productSources.id))
         .innerJoin(websitePages, eq(websitePages.id, productSources.websitePageId))
         .innerJoin(websites, eq(websites.id, websitePages.websiteId))
         .where(
@@ -341,21 +360,69 @@ export async function listProducts(
     sourcesByProduct.get(productId)!.push(row);
   }
 
-  const items: ProductWithSources[] = productList.map((product) => {
-    const productSourcesData = sourcesByProduct.get(product.id) ?? [];
-    const sources = productSourcesData.map((row) => ({
-      ...row.source,
-      currentPrice: row.currentPrice,
-      domain: row.domain,
-      url: row.url,
-    }));
+  // Get variants for all products (for price lookups)
+  const variantsByProductId = new Map<number, ProductVariant>();
+  if (productIds.length > 0) {
+    const variants = await database
+      .select()
+      .from(productVariants)
+      .where(
+        sql`${productVariants.primaryProductId} IN (${sql.join(
+          productIds.map((id) => sql`${id}`),
+          sql`, `
+        )})`
+      );
 
-    return {
-      ...product,
-      variant: null,
-      sources,
-    };
-  });
+    for (const variant of variants) {
+      if (variant.primaryProductId) {
+        variantsByProductId.set(variant.primaryProductId, variant);
+      }
+    }
+  }
+
+  // Build items with sources and latest prices
+  const items: ProductWithSources[] = await Promise.all(
+    productList.map(async (product) => {
+      const productSourcesData = sourcesByProduct.get(product.id) ?? [];
+      const variant = variantsByProductId.get(product.id) ?? null;
+
+      const sources = await Promise.all(
+        productSourcesData.map(async (row) => {
+          let currentPrice: PriceHistory | null = null;
+
+          if (variant) {
+            // Get latest price from priceHistory
+            const latestPrice = await database
+              .select()
+              .from(priceHistory)
+              .where(
+                and(
+                  eq(priceHistory.variantId, variant.id),
+                  eq(priceHistory.productSourceId, row.source.id)
+                )
+              )
+              .orderBy(desc(priceHistory.recordedAt))
+              .limit(1);
+
+            currentPrice = latestPrice[0] ?? null;
+          }
+
+          return {
+            ...row.source,
+            currentPrice,
+            domain: row.domain,
+            url: row.url,
+          };
+        })
+      );
+
+      return {
+        ...product,
+        variant,
+        sources,
+      };
+    })
+  );
 
   return {
     items,
@@ -479,106 +546,71 @@ export async function updateProductSource(
 }
 
 // ============================================================================
-// PRODUCT PRICE FUNCTIONS
+// PRODUCT PRICE FUNCTIONS (NOW USING PRICEHISTORY ONLY!)
 // ============================================================================
 
 /**
- * Create or update current price for a variant+source combination
- * NEW: Prices are now stored per variant, not just per source
- */
-export async function upsertProductPrice(
-  data: ProductPriceInsert
-): Promise<ProductPrice> {
-  const now = new Date();
-
-  // Check if price already exists for this variant+source combination
-  const existing = await database
-    .select()
-    .from(productPrices)
-    .where(
-      and(
-        eq(productPrices.variantId, data.variantId),
-        eq(productPrices.productSourceId, data.productSourceId)
-      )
-    )
-    .limit(1);
-
-  if (existing[0]) {
-    // Update existing price
-    const [updated] = await database
-      .update(productPrices)
-      .set({
-        ...data,
-        scrapedAt: now,
-        createdAt: existing[0].createdAt, // Preserve original creation time
-      })
-      .where(
-        and(
-          eq(productPrices.variantId, data.variantId),
-          eq(productPrices.productSourceId, data.productSourceId)
-        )
-      )
-      .returning();
-
-    if (!updated) {
-      throw new Error("Failed to update product price");
-    }
-
-    return updated;
-  } else {
-    // Create new price
-    const [created] = await database
-      .insert(productPrices)
-      .values({
-        ...data,
-        scrapedAt: now,
-        createdAt: now,
-      })
-      .returning();
-
-    if (!created) {
-      throw new Error("Failed to create product price");
-    }
-
-    return created;
-  }
-}
-
-/**
  * Get current price for a variant+source combination
+ * NEW: Fetches latest entry from priceHistory (no more productPrices table!)
  */
 export async function getCurrentPrice(
   variantId: number,
   productSourceId: number
-): Promise<ProductPrice | null> {
+): Promise<PriceHistory | null> {
   const result = await database
     .select()
-    .from(productPrices)
+    .from(priceHistory)
     .where(
       and(
-        eq(productPrices.variantId, variantId),
-        eq(productPrices.productSourceId, productSourceId)
+        eq(priceHistory.variantId, variantId),
+        eq(priceHistory.productSourceId, productSourceId)
       )
     )
+    .orderBy(desc(priceHistory.recordedAt))
     .limit(1);
 
   return result[0] ?? null;
 }
 
 /**
- * Get all prices for a specific variant across all sources
+ * Get all latest prices for a specific variant across all sources
+ * NEW: Gets the most recent priceHistory entry for each source
  */
 export async function getPricesForVariant(
   variantId: number
-): Promise<ProductPrice[]> {
-  return database
-    .select()
-    .from(productPrices)
-    .where(eq(productPrices.variantId, variantId));
+): Promise<PriceHistory[]> {
+  // Get all unique source IDs for this variant
+  const sources = await database
+    .select({ productSourceId: priceHistory.productSourceId })
+    .from(priceHistory)
+    .where(eq(priceHistory.variantId, variantId))
+    .groupBy(priceHistory.productSourceId);
+
+  // For each source, get the latest price
+  const latestPrices = await Promise.all(
+    sources.map(async ({ productSourceId }) => {
+      const latest = await database
+        .select()
+        .from(priceHistory)
+        .where(
+          and(
+            eq(priceHistory.variantId, variantId),
+            eq(priceHistory.productSourceId, productSourceId)
+          )
+        )
+        .orderBy(desc(priceHistory.recordedAt))
+        .limit(1);
+
+      return latest[0];
+    })
+  );
+
+  return latestPrices.filter((p): p is PriceHistory => p !== undefined);
 }
 
 /**
  * Get price comparison for a product across all sources
+ * NEW: Uses latest priceHistory entries
  */
 export async function getPriceComparison(
   productId: number
@@ -593,26 +625,63 @@ export async function getPriceComparison(
     return null;
   }
 
-  // Get all sources with prices
+  // Get variant for price lookup
+  const variantRow = await database
+    .select()
+    .from(productVariants)
+    .where(eq(productVariants.primaryProductId, productId))
+    .limit(1);
+
+  const variant = variantRow[0] ?? null;
+
+  // Get all sources
   const sourcesData = await database
     .select({
       sourceId: productSources.id,
       domain: websites.domain,
       url: websitePages.url,
-      price: productPrices.price,
-      currency: productPrices.currency,
-      availability: productPrices.availability,
-      lastScraped: productPrices.scrapedAt,
     })
     .from(productSources)
-    .leftJoin(productPrices, eq(productPrices.productSourceId, productSources.id))
     .innerJoin(websitePages, eq(websitePages.id, productSources.websitePageId))
     .innerJoin(websites, eq(websites.id, websitePages.websiteId))
     .where(and(eq(productSources.productId, productId), eq(productSources.isActive, true)));
 
+  // Get latest prices for each source
+  const sources = await Promise.all(
+    sourcesData.map(async (row) => {
+      let latestPrice: PriceHistory | null = null;
+
+      if (variant) {
+        const priceResult = await database
+          .select()
+          .from(priceHistory)
+          .where(
+            and(
+              eq(priceHistory.variantId, variant.id),
+              eq(priceHistory.productSourceId, row.sourceId)
+            )
+          )
+          .orderBy(desc(priceHistory.recordedAt))
+          .limit(1);
+
+        latestPrice = priceResult[0] ?? null;
+      }
+
+      return {
+        sourceId: row.sourceId,
+        domain: row.domain,
+        url: row.url,
+        price: latestPrice?.price ?? null,
+        currency: latestPrice?.currency ?? "EUR",
+        availability: latestPrice?.availability ?? "unknown",
+        lastScraped: latestPrice?.recordedAt ?? null,
+      };
+    })
+  );
+
   // Find lowest price
   let lowestPrice: PriceComparisonResult["lowestPrice"] = null;
-  for (const row of sourcesData) {
+  for (const row of sources) {
     if (
       row.price &&
       row.availability === "in_stock" &&
@@ -626,16 +695,6 @@ export async function getPriceComparison(
       };
     }
   }
-
-  const sources = sourcesData.map((row) => ({
-    sourceId: row.sourceId,
-    domain: row.domain,
-    url: row.url,
-    price: row.price,
-    currency: row.currency ?? "EUR",
-    availability: row.availability ?? "unknown",
-    lastScraped: row.lastScraped,
-  }));
 
   return {
     productId: product[0].id,
@@ -674,13 +733,12 @@ export async function addPriceHistory(
 }
 
 /**
- * Update the most recent price history entry for a variant+source combination.
- * Used when the price remains the same but other data (availability, stock, etc.) changes.
+ * Update the updatedAt timestamp of the latest price history entry
+ * This is used when price/offer stays the same - we just extend the validity period
  */
-export async function updateLatestPriceHistory(
+export async function touchLatestPriceHistory(
   variantId: number,
-  productSourceId: number,
-  data: PriceHistoryUpdateInput
+  productSourceId: number
 ): Promise<PriceHistory | null> {
   const latest = await database
     .select()
@@ -694,30 +752,17 @@ export async function updateLatestPriceHistory(
     .orderBy(desc(priceHistory.recordedAt))
     .limit(1);
 
-  const current = latest[0];
-  if (!current) {
+  if (!latest[0]) {
     return null;
   }
 
-  const updatePayload: Partial<typeof priceHistory.$inferInsert> = {
-    price: data.price,
-    recordedAt: new Date(),
-  };
-
-  if (data.currency !== undefined) updatePayload.currency = data.currency ?? current.currency;
-  if (data.originalPrice !== undefined) updatePayload.originalPrice = data.originalPrice;
-  if (data.discountPercentage !== undefined) updatePayload.discountPercentage = data.discountPercentage;
-  if (data.availability !== undefined) updatePayload.availability = data.availability;
-  if (data.stockQuantity !== undefined) updatePayload.stockQuantity = data.stockQuantity;
-  if (data.metadata !== undefined) updatePayload.metadata = data.metadata;
-
   const [updated] = await database
     .update(priceHistory)
-    .set(updatePayload)
-    .where(eq(priceHistory.id, current.id))
+    .set({ updatedAt: new Date() })
+    .where(eq(priceHistory.id, latest[0].id))
     .returning();
 
-  return updated ?? current;
+  return updated ?? null;
 }
 
 /**

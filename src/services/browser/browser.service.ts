@@ -139,16 +139,29 @@ const ELEMENT_COLLECTOR_FN = new Function(
 ) as (params: { tags?: string[]; includeHidden?: boolean; limit?: number }) => Array<Record<string, any>>;
 
 /**
- * BrowserService - Manages Playwright browser instances with real Chrome
+ * BrowserService - Legacy Browser Service (DEPRECATED!)
  *
- * Features:
- * - Uses real Chrome installation (not Chromium)
- * - Session management with unique IDs
- * - Full navigation control
- * - Screenshot capabilities
- * - Page interaction (click, type, etc.)
- * - Cookie and localStorage management
- * - Event emission for monitoring
+ * ⚠️ DEPRECATED: This service is now replaced by BrowserStealthService (via BrowserHandler).
+ * All new code should use BrowserHandler which automatically uses Stealth mode.
+ *
+ * Why deprecated:
+ * - No Chrome Extensions support
+ * - CDP leaks detectable by bot-detection systems
+ * - No WebRTC leak protection
+ * - No advanced fingerprinting protection
+ *
+ * Migration:
+ * ```typescript
+ * // OLD (deprecated):
+ * const service = new BrowserService(config);
+ * await service.initialize();
+ *
+ * // NEW (recommended):
+ * import { browserHandler } from '@/services/browser';
+ * const session = await browserHandler.createSession(config); // Uses Stealth automatically!
+ * ```
+ *
+ * @deprecated Use BrowserHandler (with Stealth mode) instead
  */
 export class BrowserService extends EventEmitter {
   private browser: Browser | null = null;
@@ -192,20 +205,6 @@ export class BrowserService extends EventEmitter {
     this.config = {
       headless: false, // Show browser for user visibility
       slowMo: 100, // Slow down by 100ms to appear more human-like
-      devtools: false,
-      args: [
-        // Only essential Linux flags - Patchright handles the rest
-        '--disable-dev-shm-usage',
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-
-        // Locale
-        '--lang=de-DE,de',
-      ],
-      viewport: {
-        width: 1920,
-        height: 1080,
-      },
       navigation: {
         waitUntil: 'load',
         timeout: 45000,
@@ -222,19 +221,8 @@ export class BrowserService extends EventEmitter {
 
     this.urlTracker = new URLTracker();
 
-    // Initialisiere Anti-Detection Services falls aktiviert
-    if (config.humanizedInteractions !== false) {
-      // Standard: aktiviert, außer explizit deaktiviert
-      this.humanizedInteraction = new HumanizedInteractionService();
-    }
-
-    if (config.captchaSolver && config.captchaSolver.provider !== 'none' && config.captchaSolver.apiKey) {
-      this.captchaSolver = new CaptchaSolverService({
-        provider: config.captchaSolver.provider as 'none' extends typeof config.captchaSolver.provider ? never : typeof config.captchaSolver.provider,
-        apiKey: config.captchaSolver.apiKey,
-        timeout: config.captchaSolver.timeout,
-      });
-    }
+    // Initialisiere Anti-Detection Services (always enabled in legacy mode)
+    this.humanizedInteraction = new HumanizedInteractionService();
 
     const cookieConsentConfig = this.config.cookieConsent ?? {};
     this.config.cookieConsent = cookieConsentConfig;
@@ -259,9 +247,7 @@ export class BrowserService extends EventEmitter {
       this.browser = await chromium.launch({
         headless: this.config.headless,
         channel: 'chrome', // Use system Chrome instead of executablePath
-        args: this.config.args,
         slowMo: this.config.slowMo,
-        devtools: this.config.devtools,
       });
 
       // Create context with minimal fingerprinting (let Chrome use real values)
@@ -751,8 +737,8 @@ export class BrowserService extends EventEmitter {
     try {
       const { type, selector, value, options } = interaction;
 
-      // Use humanized interactions if enabled
-      const useHumanized = this.config.humanizedInteractions !== false && this.humanizedInteraction;
+      // Humanized interactions are always enabled in legacy mode
+      const useHumanized = !!this.humanizedInteraction;
 
       switch (type) {
         case 'click':
