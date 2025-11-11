@@ -1,5 +1,5 @@
 // AUTO-GENERATED FILE - DO NOT EDIT MANUALLY
-// Generated at: 2025-11-07T16:19:16.528Z
+// Generated at: 2025-11-07T17:19:11.826Z
 // Run `npm run types:generate` to regenerate this file
 
 // ============================================================================
@@ -10,6 +10,20 @@ export type AppSettingsType = 'string' | 'number' | 'boolean' | 'json';
 export type WebhookStatus = 'pending' | 'processed' | 'failed' | 'skipped';
 export type AppLogLevel = 'info' | 'warn' | 'error' | 'debug' | 'fatal' | 'critical';
 export type RoleAssignmentStatus = 'active' | 'expired' | 'revoked';
+
+export type ProductAvailability = "in_stock" | "out_of_stock" | "limited_stock" | "preorder" | "discontinued" | "unknown"
+export type PriceAlertType = "below_price" | "percentage_drop" | "back_in_stock" | "price_error"
+export type PriceAlertStatus = "active" | "expired" | "disabled" | "triggered"
+export type ProductAttributeType = "custom" | "screen_size" | "storage" | "memory" | "color" | "resolution" | "processor" | "weight" | "dimensions" | "connectivity"
+export type ProductMatchStatus = "pending" | "accepted" | "rejected" | "auto_merged"
+export type ScrapingQualitySeverity = "info" | "critical" | "warning"
+export type ScrapingQualityStatus = "open" | "acknowledged" | "resolved" | "ignored"
+export type WebsiteWorkflowType = "custom" | "price_check" | "data_extraction" | "form_fill" | "monitoring" | "scraping" | "testing"
+export type WebsiteWorkflowStatus = "error" | "active" | "disabled" | "paused"
+export type WebsiteWorkflowRunStatus = "pending" | "running" | "success" | "failed" | "timeout" | "cancelled"
+export type BrowserSessionStatus = "active" | "idle" | "navigating" | "closed"
+export type BrowserActivityType = "navigation" | "screenshot" | "interaction" | "script" | "extraction"
+
 
 // ============================================================================
 // DATABASE TYPES - Base Schema
